@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>J.A.R.V.I.S.</title>
+<style>
+  :root{
+    --bg:#04090e; --panel:#07141c; --panel2:#091b25;
+    --line:#123642; --line2:#1d5468;
+    --cyan:#5fd9f2; --cyan-dim:#2b8195; --cyan-deep:#10333f;
+    --amber:#ffb02e; --red:#ff5f5f; --green:#4fe0a0;
+    --text:#9fcfdd; --text-dim:#4d7f8f;
+    --mono:"Consolas","SF Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--mono);
+       font-size:13px;overflow:hidden;height:100vh}
+
+  /* ── top bar ─────────────────────────────────────────────────── */
+  .topbar{position:relative;z-index:2;height:46px;display:flex;align-items:center;
+    justify-content:space-between;padding:0 16px;background:var(--panel);
+    border-bottom:1px solid var(--line);gap:14px}
+  .topbar .brand{letter-spacing:.44em;color:var(--cyan);font-size:13px;
+    text-shadow:0 0 12px rgba(95,217,242,.4);white-space:nowrap}
+  .micwrap{display:flex;align-items:center;gap:9px;min-width:0}
+  .micwrap label{font-size:9px;color:var(--text-dim);letter-spacing:.2em;white-space:nowrap}
+  .sel{position:relative;min-width:0}
+  .sel::after{content:"";position:absolute;right:11px;top:50%;
+    width:6px;height:6px;border-right:1.5px solid var(--cyan);
+    border-bottom:1.5px solid var(--cyan);transform:translateY(-70%) rotate(45deg);
+    pointer-events:none}
+  select#mic{appearance:none;-webkit-appearance:none;background:var(--panel2);
+    border:1px solid var(--line2);color:var(--cyan);font-family:var(--mono);
+    font-size:11.5px;padding:7px 30px 7px 11px;cursor:pointer;outline:none;
+    max-width:340px;width:100%;text-overflow:ellipsis;transition:.14s}
+  select#mic:hover{border-color:var(--cyan)}
+  select#mic:focus{border-color:var(--cyan);box-shadow:0 0 0 1px rgba(95,217,242,.25)}
+  select#mic option{background:#071019;color:var(--text)}
+  select#mic option:disabled{color:#3d5a64}
+  .miclvl{width:54px;height:5px;background:var(--cyan-deep);overflow:hidden;flex:none}
+  .miclvl i{display:block;height:100%;width:0%;background:var(--cyan);
+    box-shadow:0 0 7px var(--cyan);transition:width .09s linear}
+
+  #talk{background:transparent;border:1px solid var(--cyan);color:var(--cyan);
+    font-family:var(--mono);font-size:11.5px;letter-spacing:.2em;padding:7px 20px;
+    cursor:pointer;text-transform:uppercase;white-space:nowrap;transition:.14s;flex:none}
+  #talk:hover{background:rgba(95,217,242,.13);box-shadow:0 0 16px rgba(95,217,242,.3)}
+  #talk:active{background:rgba(95,217,242,.24)}
+  #talk.live{background:rgba(95,217,242,.2);animation:tp 1.1s ease-in-out infinite}
+  @keyframes tp{0%,100%{box-shadow:0 0 6px rgba(95,217,242,.35)}
+                50%{box-shadow:0 0 20px rgba(95,217,242,.75)}}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      repeating-linear-gradient(0deg,transparent 0 3px,rgba(95,217,242,.014) 3px 4px),
+      radial-gradient(ellipse at 28% 45%,rgba(43,129,149,.13),transparent 62%);}
+  .wrap{position:relative;z-index:1;display:grid;grid-template-columns:minmax(360px,42%) 1fr;
+        height:calc(100vh - 46px);gap:1px;background:var(--line)}
+  .col{background:var(--bg);display:flex;flex-direction:column;min-width:0;overflow:hidden}
+
+  /* ── left: reactor ───────────────────────────────────────────── */
+  .reactor{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
+  canvas#ring{max-width:100%;max-height:100%;width:min(78vh,560px);height:min(78vh,560px)}
+  .core{position:absolute;text-align:center;pointer-events:none}
+  .core .st{font-size:15px;letter-spacing:.42em;color:var(--cyan);
+            text-transform:uppercase;text-shadow:0 0 14px rgba(95,217,242,.55)}
+  .core .sub{font-size:10px;color:var(--text-dim);margin-top:7px;letter-spacing:.2em}
+
+  .wave{height:54px;border-top:1px solid var(--line);background:var(--panel)}
+  canvas#wave{width:100%;height:54px;display:block}
+
+  .stats{border-top:1px solid var(--line);background:var(--panel);
+         display:grid;grid-template-columns:1fr 1fr 1fr}
+  .stat{padding:11px 13px;border-right:1px solid var(--line)}
+  .stat:last-child{border-right:none}
+  .stat .k{font-size:9px;color:var(--text-dim);letter-spacing:.18em;text-transform:uppercase}
+  .stat .v{font-size:17px;color:var(--cyan);margin-top:4px}
+  .stat .v.amber{color:var(--amber)}
+
+  .task{border-top:1px solid var(--line);background:var(--panel2);padding:11px 13px;min-height:54px}
+  .task .k{font-size:9px;color:var(--text-dim);letter-spacing:.18em;text-transform:uppercase}
+  .task .v{margin-top:5px;color:var(--text);line-height:1.45;word-break:break-word}
+
+  /* ── right: log ──────────────────────────────────────────────── */
+  .hdr{padding:10px 15px;border-bottom:1px solid var(--line);background:var(--panel);
+       display:flex;justify-content:space-between;align-items:center}
+  .hdr .t{letter-spacing:.34em;color:var(--cyan);font-size:12px}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
+       background:var(--red);margin-right:7px;vertical-align:middle}
+  .dot.on{background:var(--green);box-shadow:0 0 8px var(--green)}
+
+  .log{flex:1;overflow-y:auto;padding:11px 13px}
+  .log::-webkit-scrollbar{width:8px}
+  .log::-webkit-scrollbar-thumb{background:var(--line2)}
+  .ev{border-left:2px solid var(--line2);padding:7px 0 7px 11px;margin-bottom:11px}
+  .ev .meta{font-size:10px;color:var(--text-dim);letter-spacing:.1em;
+            display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+  .ev .title{color:var(--cyan);margin-top:4px}
+  .ev.ok{border-left-color:var(--green)}
+  .ev.bad{border-left-color:var(--red)}
+  .ev.hold{border-left-color:var(--amber)}
+  .ev.user{border-left-color:var(--cyan)}
+  .ev.say{border-left-color:var(--cyan-dim)}
+  .badge{font-size:9px;padding:1px 6px;border:1px solid currentColor;letter-spacing:.1em}
+  .b-ok{color:var(--green)} .b-bad{color:var(--red)}
+  .b-hold{color:var(--amber)} .b-info{color:var(--cyan-dim)}
+
+  pre.code{margin:7px 0 0;background:#030b10;border:1px solid var(--line);
+    padding:9px 11px;overflow-x:auto;font-size:11.5px;line-height:1.55;
+    color:#bfe6f0;max-height:230px;overflow-y:auto}
+  pre.code .ln{color:#2d5c6b;user-select:none;display:inline-block;width:2.4em}
+  pre.code .flag{background:rgba(255,176,46,.14);display:block;
+                 margin:0 -11px;padding:0 11px;border-left:2px solid var(--amber)}
+  pre.out{margin:6px 0 0;background:#02090d;border:1px solid var(--line);
+    padding:8px 11px;font-size:11.5px;color:#8fb8c4;max-height:150px;
+    overflow:auto;white-space:pre-wrap;word-break:break-word}
+  pre.out.err{color:#ffa0a0;border-color:#4a1f1f}
+
+  /* ── confirm overlay ─────────────────────────────────────────── */
+  .ovl{position:fixed;inset:0;z-index:20;background:rgba(2,6,10,.9);
+       display:flex;align-items:center;justify-content:center;padding:22px}
+  .box{background:var(--panel2);border:1px solid var(--amber);max-width:760px;width:100%;
+       box-shadow:0 0 44px rgba(255,176,46,.16);max-height:88vh;display:flex;flex-direction:column}
+  .box h2{margin:0;padding:13px 17px;border-bottom:1px solid var(--line);
+    color:var(--amber);font-size:13px;letter-spacing:.24em;text-transform:uppercase;font-weight:400}
+  .box .body{padding:15px 17px;overflow-y:auto}
+  .finding{color:var(--amber);font-size:11.5px;margin-bottom:5px}
+  .finding b{color:var(--text);font-weight:400}
+  .acts{padding:13px 17px;border-top:1px solid var(--line);display:flex;gap:11px;justify-content:flex-end}
+  button{font-family:var(--mono);font-size:12px;letter-spacing:.14em;padding:9px 21px;
+    background:transparent;border:1px solid var(--line2);color:var(--text);cursor:pointer;
+    text-transform:uppercase;transition:.14s}
+  button:hover{border-color:var(--cyan);color:var(--cyan)}
+  button.go{border-color:var(--amber);color:var(--amber)}
+  button.go:hover{background:rgba(255,176,46,.12)}
+  .empty{color:var(--text-dim);text-align:center;padding:38px 0;letter-spacing:.14em;font-size:11px}
+
+  /* Fullscreen / kiosk: this is the whole screen, so let it breathe. */
+  @media (min-width:1500px){
+    .topbar{height:56px;padding:0 26px}
+    .topbar .brand{font-size:16px;letter-spacing:.5em}
+    .wrap{height:calc(100vh - 56px);grid-template-columns:minmax(520px,46%) 1fr}
+    .core .st{font-size:20px;letter-spacing:.5em}
+    .core .sub{font-size:12px}
+    .stat .v{font-size:22px}
+    .log{padding:16px 20px;font-size:14px}
+    .ev .title{font-size:14.5px}
+    pre.code{font-size:12.5px;max-height:320px}
+    pre.out{font-size:12.5px;max-height:220px}
+  }
+  .exithint{position:fixed;right:14px;bottom:10px;z-index:3;font-size:10px;
+    color:var(--text-dim);letter-spacing:.12em;pointer-events:none;opacity:.65}
+
+  @media (max-width:880px){
+    .wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+    .reactor{min-height:290px}
+  }
+</style>
+</head>
+<body>
+<div class="exithint">ALT+F4 TO EXIT &nbsp;·&nbsp; SPACE TO TALK</div>
+<div class="topbar">
+  <div class="brand">J.A.R.V.I.S.</div>
+  <div class="micwrap">
+    <label for="mic">MICROPHONE</label>
+    <div class="sel"><select id="mic"><option>detecting…</option></select></div>
+    <div class="miclvl" title="input level"><i id="miclvl"></i></div>
+    <button id="talk" title="Click, then speak (or press F9)">Talk</button>
+  </div>
+</div>
+<div class="wrap">
+  <div class="col">
+    <div class="reactor">
+      <canvas id="ring" width="520" height="520"></canvas>
+      <div class="core">
+        <div class="st" id="stateTxt">IDLE</div>
+        <div class="sub" id="stateSub">standing by</div>
+      </div>
+    </div>
+    <div class="wave"><canvas id="wave"></canvas></div>
+    <div class="stats">
+      <div class="stat"><div class="k">Today</div><div class="v" id="spend">$0.000000</div></div>
+      <div class="stat"><div class="k">Cache hit</div><div class="v" id="cache">—</div></div>
+      <div class="stat"><div class="k">Model</div><div class="v" id="model" style="font-size:12px">—</div></div>
+    </div>
+    <div class="task"><div class="k">Current task</div><div class="v" id="task">—</div></div>
+  </div>
+
+  <div class="col">
+    <div class="hdr">
+      <div class="t">ACTIVITY</div>
+      <div style="font-size:10px;color:var(--text-dim)">
+        <span class="dot" id="conn"></span><span id="connTxt">offline</span>
+      </div>
+    </div>
+    <div class="log" id="log"><div class="empty">awaiting activity</div></div>
+  </div>
+</div>
+
+<script>
+// ── reactor ────────────────────────────────────────────────────────────────
+const ring = document.getElementById('ring'), rx = ring.getContext('2d');
+let state = 'idle', t = 0, level = 0;
+const PAL = {
+  idle:'#2b8195', listening:'#5fd9f2', thinking:'#5fd9f2',
+  acting:'#ffb02e', speaking:'#4fe0a0', error:'#ff5f5f'
+};
+function arc(cx,cy,r,a0,a1,w,col,alpha=1){
+  rx.beginPath(); rx.strokeStyle=col; rx.globalAlpha=alpha;
+  rx.lineWidth=w; rx.arc(cx,cy,r,a0,a1); rx.stroke(); rx.globalAlpha=1;
+}
+function drawRing(){
+  const W=ring.width, H=ring.height, cx=W/2, cy=H/2;
+  rx.clearRect(0,0,W,H);
+  const col = PAL[state]||PAL.idle;
+  const spin = state==='thinking'?4.2 : state==='acting'?2.4 : 0.55;
+  t += 0.016;
+
+  // faint outer field
+  const g = rx.createRadialGradient(cx,cy,60,cx,cy,235);
+  g.addColorStop(0,'rgba(95,217,242,0.055)'); g.addColorStop(1,'transparent');
+  rx.fillStyle=g; rx.fillRect(0,0,W,H);
+
+  // tick ring
+  rx.save(); rx.translate(cx,cy);
+  for(let i=0;i<72;i++){
+    const a=(i/72)*Math.PI*2, long=i%6===0;
+    rx.beginPath(); rx.strokeStyle=col;
+    rx.globalAlpha= long?0.5:0.18; rx.lineWidth= long?1.6:1;
+    rx.moveTo(Math.cos(a)*212, Math.sin(a)*212);
+    rx.lineTo(Math.cos(a)*(long?194:202), Math.sin(a)*(long?194:202));
+    rx.stroke();
+  }
+  rx.restore(); rx.globalAlpha=1;
+
+  arc(cx,cy,224,0,Math.PI*2,1,col,0.20);
+  arc(cx,cy,186,t*spin, t*spin+Math.PI*0.62, 3, col, 0.92);
+  arc(cx,cy,186,t*spin+Math.PI, t*spin+Math.PI*1.34, 3, col, 0.62);
+  arc(cx,cy,168,-t*spin*0.7, -t*spin*0.7+Math.PI*1.25, 1.4, col, 0.38);
+  arc(cx,cy,150,t*spin*0.45, t*spin*0.45+Math.PI*0.38, 6, '#ffb02e', 0.72);
+
+  // audio-reactive inner ring
+  const pulse = 104 + Math.sin(t*2.1)*4 + level*46;
+  arc(cx,cy,pulse,0,Math.PI*2,2,col,0.82);
+  arc(cx,cy,pulse-13,0,Math.PI*2,1,col,0.30);
+
+  // core glow
+  const cg = rx.createRadialGradient(cx,cy,0,cx,cy,88);
+  cg.addColorStop(0, col+'44'); cg.addColorStop(1,'transparent');
+  rx.fillStyle=cg; rx.beginPath(); rx.arc(cx,cy,88,0,Math.PI*2); rx.fill();
+
+  requestAnimationFrame(drawRing);
+}
+drawRing();
+
+// ── waveform ───────────────────────────────────────────────────────────────
+const wv=document.getElementById('wave'), wc=wv.getContext('2d');
+let bars=new Array(150).fill(0);
+function drawWave(){
+  const r=wv.getBoundingClientRect();
+  if(wv.width!==r.width){wv.width=r.width; wv.height=54;}
+  wc.clearRect(0,0,wv.width,wv.height);
+  const bw=wv.width/bars.length, mid=wv.height/2;
+  const active = state==='listening'||state==='speaking';
+  bars.push(active ? Math.random()*(state==='listening'?level*1.5+0.12:0.5)+0.05 : Math.max(0,bars[bars.length-1]*0.9-0.012));
+  bars.shift();
+  wc.strokeStyle = PAL[state]||PAL.idle;
+  for(let i=0;i<bars.length;i++){
+    const h=Math.max(1,bars[i]*mid*1.7);
+    wc.globalAlpha = 0.28 + (i/bars.length)*0.62;
+    wc.lineWidth=1.4; wc.beginPath();
+    wc.moveTo(i*bw, mid-h); wc.lineTo(i*bw, mid+h); wc.stroke();
+  }
+  wc.globalAlpha=1;
+  requestAnimationFrame(drawWave);
+}
+drawWave();
+
+// ── helpers ────────────────────────────────────────────────────────────────
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function setState(s,sub){
+  state=s; $('stateTxt').textContent=s.toUpperCase();
+  $('stateTxt').style.color=PAL[s]||PAL.idle;
+  if(sub!==undefined) $('stateSub').textContent=sub;
+}
+function codeBlock(code,flagged){
+  const F=new Set(flagged||[]);
+  return '<pre class="code">'+String(code||'').split('\n').map((l,i)=>{
+    const n=i+1, body='<span class="ln">'+String(n).padStart(3)+'</span>'+esc(l);
+    return F.has(n) ? '<span class="flag">'+body+'</span>' : body;
+  }).join('\n')+'</pre>';
+}
+let first=true;
+function push(html,cls){
+  const log=$('log');
+  if(first){log.innerHTML='';first=false;}
+  const d=document.createElement('div');
+  d.className='ev '+(cls||'');
+  d.innerHTML=html;
+  log.appendChild(d);
+  log.scrollTop=log.scrollHeight;
+  while(log.children.length>90) log.removeChild(log.firstChild);
+}
+const clock=()=>new Date().toLocaleTimeString('en-GB');
+
+function render(e){
+  if(e.type==='transcript'){
+    push(`<div class="meta"><span>${clock()}</span><span class="badge b-info">YOU SAID</span></div>
+          <div class="title">${esc(e.text)}</div>`,'user');
+  }
+  else if(e.type==='tool_call'){
+    $('task').textContent=e.description||e.tool;
+    push(`<div class="meta"><span>${clock()}</span><span class="badge b-info">${esc(e.tool)}</span></div>
+          <div class="title">${esc(e.description||'')}</div>
+          ${e.code?codeBlock(e.code):''}`);
+  }
+  else if(e.type==='tool_result'){
+    const good=e.ok;
+    let h=`<div class="meta"><span>${clock()}</span>
+      <span class="badge ${good?'b-ok':'b-bad'}">${esc(e.status||(good?'ok':'failed'))}</span>
+      ${e.duration_s!=null?`<span>${e.duration_s}s</span>`:''}</div>`;
+    if(e.stdout) h+=`<pre class="out">${esc(e.stdout)}</pre>`;
+    if(e.stderr) h+=`<pre class="out err">${esc(e.stderr)}</pre>`;
+    push(h, good?'ok':'bad');
+  }
+  else if(e.type==='escalate'){
+    push(`<div class="meta"><span>${clock()}</span><span class="badge b-hold">ESCALATED</span></div>
+          <div class="title">${esc(e.model)} / ${esc(e.effort)} — ${esc(e.reason||'')}</div>`,'hold');
+  }
+  else if(e.type==='reply'){
+    push(`<div class="meta"><span>${clock()}</span><span class="badge b-info">JARVIS</span></div>
+          <div class="title">${esc(e.text)}</div>`,'say');
+  }
+  else if(e.type==='error'){
+    push(`<div class="meta"><span>${clock()}</span><span class="badge b-bad">ERROR</span></div>
+          <div class="title">${esc(e.error)}</div>`,'bad');
+  }
+  else if(e.type==='confirm_required'){
+    push(`<div class="meta"><span>${clock()}</span><span class="badge b-hold">HELD</span></div>
+          <div class="title">${esc(e.summary||'awaiting approval')}</div>`,'hold');
+  }
+}
+
+// ── microphone selector ────────────────────────────────────────────────────
+function renderDevices(list){
+  const sel=$('mic');
+  if(!list || !list.length){
+    sel.innerHTML='<option value="">no input devices</option>';
+    sel.disabled=true; return;
+  }
+  sel.disabled=false;
+  const active=list.find(d=>d.active);
+  sel.innerHTML='<option value="-1">System default</option>'+list.map(d=>{
+    const tag=[d.default?'default':'', d.usable?'':'unsupported'].filter(Boolean).join(', ');
+    return `<option value="${d.index}" ${d.active?'selected':''} ${d.usable?'':'disabled'}>`+
+           `${esc(d.name)}${tag?'  ('+tag+')':''}</option>`;
+  }).join('');
+  if(active) sel.value=String(active.index);
+}
+$('mic').addEventListener('change', async ev=>{
+  const idx=ev.target.value;
+  ev.target.disabled=true;
+  try{
+    const r=await (await fetch(`/api/device/${idx}`,{method:'POST'})).json();
+    if(!r.ok) push(`<div class="meta"><span>${clock()}</span>
+      <span class="badge b-bad">MIC</span></div>
+      <div class="title">${esc(r.error||'could not switch microphone')}</div>`,'bad');
+  }catch(e){}
+  ev.target.disabled=false;
+});
+fetch('/api/devices').then(r=>r.json()).then(d=>renderDevices(d.devices)).catch(()=>{});
+
+// ── click to talk ──────────────────────────────────────────────────────────
+async function talk(){
+  const b=$('talk');
+  b.classList.add('live');
+  try{
+    const r=await (await fetch('/api/listen',{method:'POST'})).json();
+    if(!r.ok) push(`<div class="meta"><span>${clock()}</span>
+      <span class="badge b-bad">TALK</span></div>
+      <div class="title">${esc(r.error||'audio not running')}</div>`,'bad');
+  }catch(e){}
+  setTimeout(()=>b.classList.remove('live'),1200);
+}
+$('talk').onclick=talk;
+// Space bar anywhere on the page, as long as you are not typing in a field.
+document.addEventListener('keydown',ev=>{
+  if(ev.code==='Space' && !ovl && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)){
+    ev.preventDefault(); talk();
+  }
+});
+
+// ── confirmation overlay ───────────────────────────────────────────────────
+let ovl=null;
+function openConfirm(e){
+  closeConfirm();
+  setState('acting','awaiting your approval');
+  ovl=document.createElement('div'); ovl.className='ovl';
+  ovl.innerHTML=`<div class="box">
+    <h2>Approval required — ${esc(e.summary||'flagged')}</h2>
+    <div class="body">
+      ${(e.findings||[]).map(f=>`<div class="finding">line ${f.lineno} &nbsp;<b>[${esc(f.severity)}]</b> ${esc(f.detail)}</div>`).join('')}
+      ${codeBlock(e.code,e.flagged_lines)}
+    </div>
+    <div class="acts">
+      <button id="no">Decline</button>
+      <button id="yes" class="go">Run it</button>
+    </div></div>`;
+  document.body.appendChild(ovl);
+  const send=d=>fetch(`/api/confirm/${e.id}/${d}`,{method:'POST'}).then(closeConfirm);
+  ovl.querySelector('#yes').onclick=()=>send('approve');
+  ovl.querySelector('#no').onclick=()=>send('decline');
+  document.addEventListener('keydown',keyer);
+}
+function keyer(ev){
+  if(!ovl) return;
+  if(ev.key==='Escape') ovl.querySelector('#no').click();
+}
+function closeConfirm(){
+  if(ovl){ovl.remove();ovl=null;document.removeEventListener('keydown',keyer);}
+}
+
+// ── socket ─────────────────────────────────────────────────────────────────
+let ws;
+function connect(){
+  ws=new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen=()=>{$('conn').classList.add('on');$('connTxt').textContent='connected';};
+  ws.onclose=()=>{
+    $('conn').classList.remove('on');$('connTxt').textContent='reconnecting';
+    setState('idle','link lost'); setTimeout(connect,1400);
+  };
+  ws.onmessage=m=>{
+    const e=JSON.parse(m.data);
+    if(e.type==='hello'){
+      if(e.spend_today!=null) $('spend').textContent='$'+e.spend_today.toFixed(6);
+      if(e.cache_hit_rate!=null) $('cache').textContent=(e.cache_hit_rate*100).toFixed(0)+'%';
+      if(e.devices) renderDevices(e.devices);
+      (e.history||[]).forEach(render);
+      return;
+    }
+    if(e.type==='mic'){
+      if(e.devices) renderDevices(e.devices);
+      push(`<div class="meta"><span>${clock()}</span><span class="badge b-info">MIC</span></div>
+            <div class="title">listening on ${esc(e.name||'default')}</div>`);
+      return;
+    }
+    if(e.type==='state'){
+      const sub={idle:'standing by',listening:'listening',thinking:'reasoning',
+                 acting:'executing',speaking:'responding'}[e.state]||'';
+      setState(e.state,sub);
+      if(e.model) $('model').textContent=e.model.replace('gpt-','')+(e.effort?' · '+e.effort:'');
+      if(e.state==='idle') $('task').textContent='—';
+      return;
+    }
+    if(e.type==='cost'){
+      $('spend').textContent='$'+(e.today_usd||0).toFixed(6);
+      $('spend').classList.toggle('amber',(e.today_usd||0)>0.5);
+      return;
+    }
+    if(e.type==='level'){
+      level=e.level||0;
+      $('miclvl').style.width=Math.min(100,level*130).toFixed(0)+'%';
+      return;
+    }
+    if(e.type==='confirm_open'){ openConfirm(e); return; }
+    if(e.type==='confirm_close'){ closeConfirm(); return; }
+    render(e);
+  };
+}
+connect();
+setInterval(()=>fetch('/api/state').then(r=>r.json()).then(s=>{
+  $('spend').textContent='$'+(s.spend_today||0).toFixed(6);
+  $('cache').textContent=((s.cache_hit_rate||0)*100).toFixed(0)+'%';
+}).catch(()=>{}),12000);
+</script>
+</body>
+</html>

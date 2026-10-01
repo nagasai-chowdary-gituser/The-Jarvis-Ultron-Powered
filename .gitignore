@@ -1,0 +1,53 @@
+# Secrets — never commit
+.env
+
+# Environment
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# pywin32 COM type-library cache
+**/win32com/gen_py/
+
+# Runtime state
+workspace/
+jarvis.db
+*.log
+logs/
+
+# Generated-but-unpromoted recipes (Phase 5 review queue)
+tools/pending/
+
+# OS
+Thumbs.db
+desktop.ini
+
+# ── Added before the first push ───────────────────────────────────────────────
+# A REAL CHROME PROFILE. Jarvis drives its own Chrome, and that profile holds
+# "Login Data", "Network/Cookies" and "Web Data" - saved passwords and live
+# session cookies for every account signed into it. Committing this would hand
+# over the accounts themselves, not just a key that can be rotated.
+.hud-profile/
+*-profile/
+chrome-profile/
+
+# Runtime state: the database carries conversations, contacts, messages and
+# spend. Personal, not source.
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Process bookkeeping
+*.pid
+
+# Scratch files from working sessions
+scratchpad/
+scratchpad_*
+.unlazy/
+
+# Local gate approvals and caches
+.ruff_cache/
+.mypy_cache/

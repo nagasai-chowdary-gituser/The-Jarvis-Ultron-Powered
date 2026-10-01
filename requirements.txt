@@ -1,0 +1,40 @@
+# ── Jarvis runtime ────────────────────────────────────────────────────────────
+# Python 3.11 (see AGENTS.md "Deviations" for why not 3.12)
+#
+# Every line here is imported by code that still exists. The old file listed
+# pyautogui, keyboard, openwakeword, webrtcvad, soundfile and python-pptx for
+# modules that have been deleted - GUI driving, the wake word, and the screen
+# loop. Nothing imports them now, so they are gone rather than dormant.
+
+# Web / transport
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+websockets==13.1          # server side in main.py, client side in hud_gl.py
+python-dotenv==1.0.1
+httpx==0.28.1
+
+# Providers
+openai==3.14.0
+twilio==9.11.0
+python-multipart==0.0.20  # Twilio posts /voice as a form
+
+# The interface
+pygame==2.6.1
+numpy==1.26.4
+psutil==6.0.0             # the load graph, and real numbers on screen
+
+# Desk voice — optional. `jarvis --voice` only; typed desk works without it.
+sounddevice==0.5.6
+
+# Reachable from run_python, so pre-installed rather than pip-installed mid-task
+playwright==1.49.1        # Chrome over CDP - a protocol, not pixels
+beautifulsoup4==4.12.3
+pandas==2.2.3
+pillow==11.0.0
+
+# Deletion means the recycle bin, never os.remove. safety.trash() depends on it.
+send2trash==1.8.3
+
+# Tests
+pytest==8.3.4
+pytest-asyncio==0.23.3

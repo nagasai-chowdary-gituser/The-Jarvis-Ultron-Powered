@@ -1,0 +1,11 @@
+{
+  "ROUTER": "gpt-5.6-luna",
+  "BRAIN": "gpt-5.6-luna",
+  "BRAIN_ESCALATED": "gpt-5.6-terra",
+  "CODER": "gpt-5.6-terra",
+  "REALTIME": "gpt-realtime-mini",
+  "STT": "gpt-4o-mini-transcribe",
+  "TTS": "tts-1",
+  "VISION": "gpt-5.6-luna",
+  "EMBED": "text-embedding-3-small"
+}
