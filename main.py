@@ -31,7 +31,9 @@ import httpx
 from fastapi import APIRouter, FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 
+import agent_core
 import brain
+import mcp_client
 import realtime
 import safety
 import state
@@ -112,11 +114,18 @@ async def handle(text: str, transport: Transport, jid: str = "") -> str:
     last few turns from, so "yes, proceed" still knows what it is proceeding
     with. Each door keeps its own thread: a phone call does not inherit the
     middle of a Telegram exchange."""
-    session = Session(transport)
     channel = f"chan:{transport.value}"
-    b = brain.Brain(session, jid=jid, emit=emit, channel=channel)
     emit({"type": "heard", "text": text, "via": transport.value})
-    return await asyncio.to_thread(b.run, text)
+    # The new multi-agent core (terra orchestrator + luna specialists + MCP).
+    # JARVIS_LEGACY_BRAIN=1 falls back to the old flat 4-tool brain, kept as an
+    # escape hatch while the new core settles.
+    if os.environ.get("JARVIS_LEGACY_BRAIN") == "1":
+        session = Session(transport)
+        b = brain.Brain(session, jid=jid, emit=emit, channel=channel)
+        return await asyncio.to_thread(b.run, text)
+    return await asyncio.to_thread(
+        lambda: agent_core.run_turn(text, transport, jid=jid, emit=emit,
+                                    channel=channel))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -793,6 +802,21 @@ async def run() -> None:
     print(f"\n  jarvis up. http://127.0.0.1:{LOCAL_PORT}  db={state.DB_PATH}")
     print(f"  worker: run `python worker.py` in another window\n")
 
+    # Warm the MCP servers in the background so the FIRST message does not wait
+    # on them - Playwright's first run downloads a browser, which is minutes.
+    # A server that fails to start is simply absent; the agent degrades to
+    # run_python. Skipped under the legacy brain, which has no MCP.
+    if os.environ.get("JARVIS_LEGACY_BRAIN") != "1":
+        async def warm_mcp() -> None:
+            try:
+                await asyncio.to_thread(agent_core.build_team)
+                print(f"  [mcp] {agent_core.mcp_report()}")
+            except Exception as e:
+                state.record_error("startup.warm_mcp", e)
+                print(f"  [mcp] warm-up failed, will use run_python only: "
+                      f"{type(e).__name__}: {e}")
+        asyncio.create_task(warm_mcp())
+
     # Named `runners`, not `tasks`: a local called `tasks` shadowed the tasks
     # MODULE for the whole function, so recover_interrupted() above raised
     # UnboundLocalError and the backend died on startup. Caught by actually
@@ -825,6 +849,12 @@ def main() -> int:
                     print("  [tunnel] stopped")
             except Exception:
                 pass
+        # Stop the MCP server subprocesses too, or they outlive Jarvis as
+        # orphaned node/uvx processes holding the debug port and the workspace.
+        try:
+            mcp_client.manager().stop_all()
+        except Exception:
+            pass
     return 0
 
 

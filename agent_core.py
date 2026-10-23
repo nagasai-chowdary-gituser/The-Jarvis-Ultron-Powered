@@ -531,9 +531,20 @@ def mcp_report() -> dict:
 def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
              channel: str = "", user_confirmed: bool = False) -> str:
     """Run one turn through the orchestrator. Never raises."""
+    import os
     emit = emit or (lambda ev: None)
     channel = channel or f"chan:{transport.value}"
     brain._remember_turn(channel, "in", text)
+
+    # The daily cap. Past it, work that costs tokens stops; read-only status
+    # still answers, so the kill switch never also blinds him (AGENTS.md 9).
+    cap = float(os.environ.get("DAILY_CAP_USD") or models.DAILY_CAP_USD)
+    if state.spend_today() >= cap:
+        msg = (f"I have spent today's ${cap:.2f} budget, so I have stopped "
+               f"anything that costs money. Status questions still work.")
+        emit({"type": "reply", "text": msg})
+        brain._remember_turn(channel, "out", msg)
+        return msg
 
     try:
         team = build_team()
