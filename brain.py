@@ -328,6 +328,7 @@ def vet(reply: str, evidence: dict) -> str:
 def run_python(code: str, why: str = "") -> dict:
     """A fresh subprocess with lib/ importable and the workspace as cwd."""
     safety.money_check(code)
+    safety.refuse_destructive_code(code)      # deletion & runtime-built code
     safety.WORKSPACE.mkdir(parents=True, exist_ok=True)
     script = safety.WORKSPACE / f".run_{int(time.time()*1000)}.py"
     header = (f"import sys\nsys.path.insert(0, r'{ROOT}')\n"

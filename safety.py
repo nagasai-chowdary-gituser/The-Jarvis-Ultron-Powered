@@ -232,6 +232,76 @@ FORBIDDEN = (
 )
 
 
+def refuse_destructive_code(code: str) -> None:
+    """Refuse generated code that deletes, or that builds code at runtime.
+
+    THIS IS THE GUARANTEE AGENTS.md DESCRIBES AND THE REWRITE DROPPED. The
+    1,200-line safety.py that held the AST preflight was deleted with the PIN
+    system, and run_python was left scanning only for money words - so
+    a bare os-remove call in generated code ran, silently, against the owner's
+    "no deletion, ever" rule. Verified: nothing stopped it.
+
+    Refused, never held (AGENTS.md 4.3a): a hold is a prompt and a prompt is
+    the thing that gets approved. Deletion and runtime-built code (eval/exec/
+    compile/__import__) have no approval path, so they raise here and no
+    user_confirmed can clear them. Ordinary `import` is untouched. Moves and
+    renames are reversible and are NOT refused - "move it instead" is the
+    answer this refusal offers.
+
+    An AST walk, not a regex, because `getattr(os, 'remove')(x)` and
+    `__import__('os').remove(x)` defeat a substring check but not a tree."""
+    import ast
+
+    src = code or ""
+    low = src.lower()
+
+    # Text layer: shell deletions that never appear as a Python call.
+    for w in ("rm -rf", "rm -r ", "rmdir /s", "rd /s", "del /f", "del /q",
+              "remove-item", "format c:", "format /"):
+        if w in low:
+            raise Blocked(f"deletion via shell: {w!r}",
+                          "That would delete something, which I do not do. "
+                          "I can move it aside instead.")
+
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return                      # it will not run; nothing to refuse here
+
+    DELETE_ATTRS = {"remove", "unlink", "rmdir", "rmtree", "removedirs"}
+    DYNAMIC = {"eval", "exec", "compile", "__import__"}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            # os.remove / shutil.rmtree / Path(...).unlink / p.rmtree ...
+            if isinstance(f, ast.Attribute) and f.attr in DELETE_ATTRS:
+                raise Blocked(f"deletion call: .{f.attr}()",
+                              "That would delete something, which I do not do. "
+                              "I can move it aside instead.")
+            # getattr(os, "remove")(x) - the indirection that was "dynamic"
+            # and therefore merely confirmable, so one approval ran a delete.
+            if (isinstance(f, ast.Name) and f.id == "getattr"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)
+                    and str(node.args[1].value) in DELETE_ATTRS):
+                raise Blocked("deletion via getattr indirection",
+                              "That would delete something, which I do not do.")
+            # eval/exec/compile/__import__ - code the scan cannot see is code
+            # nothing can be promised about, so it is refused outright.
+            if isinstance(f, ast.Name) and f.id in DYNAMIC:
+                raise Blocked(f"runtime-built code: {f.id}()",
+                              "I will not build and run code at runtime - I "
+                              "cannot vouch for what it would do.")
+        # `from shutil import rmtree as nuke`
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name in DELETE_ATTRS:
+                    raise Blocked(f"deletion import: {a.name}",
+                                  "That imports a deletion call, which I do "
+                                  "not do.")
+
+
 def money_check(text: str) -> None:
     """A last look before anything that smells like paying for something.
 
