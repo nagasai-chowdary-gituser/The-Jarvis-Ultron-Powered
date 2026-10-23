@@ -76,6 +76,19 @@ class Session:
         self.recent.append(signature)
         del self.recent[:-6]
 
+    def new_turn(self) -> None:
+        """Reset the per-turn loop guards at the start of a fresh turn.
+
+        A realtime session is ONE long-lived Session across many spoken turns,
+        so without this its call counter only ever climbs and eventually trips
+        the runaway guard mid-conversation. The repeat/runaway caps are about a
+        single turn looping, not about a call that has lasted a while - so each
+        new user turn starts them clean. realtime.py calls this on every
+        speech_started event; it did for a long time against a method that did
+        not exist, which crashed the first time anyone spoke."""
+        self.calls = 0
+        self.recent.clear()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The gate

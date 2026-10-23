@@ -194,9 +194,18 @@ def schema_tokens() -> int:
 # THE HONESTY LAYER — code, not prompt wording
 # ─────────────────────────────────────────────────────────────────────────────
 
+# A CLAIM BY JARVIS that it is watching something, not any mention of the
+# words. The old pattern matched bare "watch"/"monitor" anywhere, so Jarvis
+# saying "the live WATCH panel is empty" got mangled into "the live-(not
+# monitoring - no job was created) panel" - it rewrote a true statement about
+# the UI into nonsense. The honesty rule only cares about a FIRST-PERSON
+# promise to keep observing, so a first-person subject must sit just before the
+# verb (or one of the few phrases that are a promise on their own).
 WAITING_WORDS = re.compile(
-    r"\b(monitor(ing|s)?|watch(ing)?|keep(ing)? an eye|i'?ll let you know|"
-    r"until he says|until she says|in the background)\b", re.I)
+    r"\b(?:i(?:'|\s?a)?m|i'?ll|i\s+will|i(?:'|\s?ha)?ve(?:\s+been)?|i\s+am)\b"
+    r"[^.?!]{0,24}?\b(?:monitor(?:ing)?|watch(?:ing)?|keep(?:ing)?\s+an?\s+eye|"
+    r"look(?:ing)?\s+out|let\s+you\s+know)\b"
+    r"|\b(?:in\s+the\s+background|until\s+(?:he|she|they)\s+says?)\b", re.I)
 
 DONE_WORDS = re.compile(
     r"\b(sent|delivered|messaged|texted|called|created|wrote|saved|opened|"

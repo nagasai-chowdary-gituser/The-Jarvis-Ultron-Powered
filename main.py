@@ -691,6 +691,79 @@ async def tunnel_keeper() -> None:
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _humanize_every(seconds) -> str:
+    try:
+        s = int(seconds or 0)
+    except (TypeError, ValueError):
+        return ""
+    if s <= 0:
+        return ""
+    if s % 3600 == 0:
+        return f"{s // 3600}h"
+    if s % 60 == 0:
+        return f"{s // 60}m"
+    return f"{s}s"
+
+
+def _job_label(kind: str, params: dict) -> str:
+    """A short human name for the LIVE WATCH row, from the job's own fields."""
+    if kind == "watch_chat":
+        return f"chat: {params.get('contact') or params.get('jid') or '?'}"
+    if kind == "poll_url":
+        url = str(params.get("url") or "")
+        host = url.split("//")[-1].split("/")[0] or url
+        return f"url: {host}"
+    if kind == "check_process":
+        return f"proc: {params.get('name') or '?'}"
+    if kind == "reminder":
+        return f"reminder: {str(params.get('text') or '')[:18]}"
+    return kind
+
+
+def _watches_snapshot() -> list[dict]:
+    """Pending jobs, in the {name, every, last, ok} shape hud_gl renders.
+
+    THE LIVE WATCH PANEL WAS ALWAYS EMPTY. hud_gl.py reads a 'jobs' event into
+    s.watches and the panel renders it, but nothing in the backend ever sent
+    one - so "watch X" scheduled a real worker job that never appeared on
+    screen, which is exactly the "job 10 isn't in the dashboard" confusion in
+    the Telegram log. This reads the same table the worker runs from."""
+    out = []
+    for j in state.jobs("pending")[:8]:
+        try:
+            params = json.loads(j.get("params") or "{}")
+        except Exception:
+            params = {}
+        out.append({
+            "name": _job_label(j.get("kind", ""), params),
+            "every": _humanize_every(j.get("every_seconds")),
+            "last": str(j.get("result") or "")[:46],
+            "ok": j.get("status", "pending") in ("pending", "done"),
+            "id": j.get("id"),
+        })
+    return out
+
+
+async def watch_broadcaster() -> None:
+    """Push the live job list to the HUD whenever it changes.
+
+    Polls the jobs table (the worker is a separate process, so the HUD cannot
+    be told from there) and emits only on change, so an idle Jarvis is silent
+    on the socket rather than resending the same list every few seconds."""
+    last = None
+    while True:
+        try:
+            snap = await asyncio.to_thread(_watches_snapshot)
+            if snap != last:
+                emit({"type": "jobs", "watches": snap})
+                last = snap
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            state.record_error("watch_broadcaster", e)
+        await asyncio.sleep(4)
+
+
 async def run() -> None:
     global _loop
     _loop = asyncio.get_running_loop()
@@ -726,7 +799,8 @@ async def run() -> None:
     # starting it - importing main.py was perfectly happy.
     runners = [asyncio.create_task(server.serve()),
                asyncio.create_task(telegram_loop()),
-               asyncio.create_task(tunnel_keeper())]
+               asyncio.create_task(tunnel_keeper()),
+               asyncio.create_task(watch_broadcaster())]
     if "--no-desk" not in sys.argv:
         runners.append(asyncio.create_task(desk_console()))
     if "--voice" in sys.argv:

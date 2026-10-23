@@ -552,17 +552,20 @@ class RealtimeSession:
         u = (ev.get("response") or {}).get("usage") or {}
         if not u:
             return
-        it = u.get("input_token_details", {}) or {}
-        ot = u.get("output_token_details", {}) or {}
-        r = PRICING.get(self.model)
-        usd = 0.0
-        if r:
-            usd = (
-                (it.get("audio_tokens", 0) or 0) * (r.audio_input_per_1m or 0)
-                + (it.get("text_tokens", 0) or 0) * (r.input_per_1m or 0)
-                + (ot.get("audio_tokens", 0) or 0) * (r.audio_output_per_1m or 0)
-                + (ot.get("text_tokens", 0) or 0) * (r.output_per_1m or 0)
-            ) / 1_000_000
+        # PRICING[model] is a PLAIN DICT ({"in","cached","out"} per 1M tokens),
+        # not an object - the old code read r.audio_input_per_1m and every
+        # usage log raised AttributeError, so a realtime call recorded zero
+        # spend and the $2 cap could never trip. Audio and text tokens bill at
+        # the same in/out rate on this key, so they are summed, with cached
+        # input discounted exactly as models.usd() does for the text path.
+        r = PRICING.get(self.model) or {}
+        inp = int(u.get("input_tokens") or 0)
+        out = int(u.get("output_tokens") or 0)
+        cached = int((u.get("input_token_details") or {}).get("cached_tokens") or 0)
+        fresh = max(0, inp - cached)
+        usd = (fresh * r.get("in", 0.0)
+               + cached * r.get("cached", 0.0)
+               + out * r.get("out", 0.0)) / 1_000_000
 
         # One ledger for every model, in state.spend.
         state.record_spend(
@@ -606,13 +609,16 @@ class RealtimeSession:
         role_dir = "in" if who == "You" else "out"
         channel = self.session.transport.value
         threading.Thread(
-            target=self._save_turn, args=(role, text, channel),
+            target=self._save_turn, args=(role_dir, text, channel),
             daemon=True, name="memory-write").start()
 
     @staticmethod
-    def _save_turn(role: str, text: str, channel: str) -> None:
+    def _save_turn(role_dir: str, text: str, channel: str) -> None:
         try:
-            state.add_message(f'self:{channel}', role_dir, text)
+            # Same channel key the text path uses (brain.handle builds
+            # "chan:<transport>"), so a spoken desk turn and a typed desk turn
+            # land in ONE thread instead of "self:phone" vs "chan:desk".
+            state.add_message(f"chan:{channel}", role_dir, text)
         except Exception:
             pass        # never let bookkeeping break a live call
 
