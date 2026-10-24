@@ -94,7 +94,19 @@ async def hud_socket(ws: WebSocket) -> None:
     try:
         await ws.send_text(json.dumps({"type": "hello", "db": str(state.DB_PATH)}))
         while True:
-            await ws.receive_text()          # display clients do not send commands
+            raw = await ws.receive_text()
+            # The HUD is a display client, with ONE exception: the desk chat
+            # sends {"type":"say","text":...}. It is treated exactly like a
+            # typed desk line - routed through the same brain, and its reply is
+            # broadcast back to every client (so the chat shows it) by emit().
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            if msg.get("type") == "say":
+                text = (msg.get("text") or "").strip()
+                if text:
+                    asyncio.create_task(handle(text, Transport.DESK))
     except WebSocketDisconnect:
         pass
     finally:

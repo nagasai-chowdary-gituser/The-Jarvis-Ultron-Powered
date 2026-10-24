@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import math
 import os
+import queue
 import time
 from dataclasses import dataclass, field
 
@@ -110,6 +111,17 @@ class HudState:
     # run: a boundary you cannot see is not a boundary. Newest first.
     audit: list = field(default_factory=list)
     connected: bool = False
+
+    # THE DESK CHAT. A fourth way in, alongside desk voice, phone and Telegram:
+    # type to Jarvis right here on the screen. The HUD is otherwise a display
+    # client that only receives; this is the one thing it sends. A typed line
+    # goes out through `outbox` (drained by the listen thread, which owns the
+    # socket) as {"type":"say"}, and Jarvis's reply arrives back as the same
+    # "reply" event every other channel produces, appended to chat_log.
+    chat_open: bool = False
+    chat_input: str = ""
+    chat_log: list = field(default_factory=list)      # (who, text), who in you|jarvis
+    outbox: queue.Queue = field(default_factory=queue.Queue)
 
 
 def _prepare_display() -> None:
@@ -190,6 +202,7 @@ class HudGL:
         self._mic_open = False
         self._mic_rects: list = []
         self._confirm_rects: list = []
+        self._chat_rects: list = []
 
         _prepare_display()
         pygame.init()
@@ -402,7 +415,12 @@ class HudGL:
                     self.quit()
                     return False
                 if e.type == pygame.KEYDOWN:
-                    if e.key == pygame.K_ESCAPE:
+                    # When the chat is open it captures typing, so ESC/RETURN/
+                    # SPACE mean "close"/"send"/"a space", not quit/approve.
+                    # A live approval still wins over the chat, deliberately.
+                    if self.s.chat_open and not self.s.confirm:
+                        self._chat_key(e)
+                    elif e.key == pygame.K_ESCAPE:
                         if self._mic_open:
                             self._mic_open = False
                         else:
@@ -431,6 +449,12 @@ class HudGL:
                     self.s.confirm_result, self.s.confirm = val, None
                     return
             return
+        # The open/close chat button, checked before the mic so it wins when
+        # the mic dropdown happens to overlap it.
+        for rect in self._chat_rects:
+            if rect.collidepoint(pos):
+                self.s.chat_open = not self.s.chat_open
+                return
         for rect, idx in self._mic_rects:
             if rect.collidepoint(pos):
                 if idx is None:
@@ -462,8 +486,113 @@ class HudGL:
         self.screen.blit(self.ui, (0, 0))
 
         self._mic_picker()          # above everything else: it is interactive
+        self._chat_panel()          # the desk chat: its button, and panel if open
         if self.s.confirm:
             self._confirm_panel()
+
+    # ── the desk chat ──────────────────────────────────────────────────────────
+
+    def _chat_key(self, e) -> None:
+        """Keystrokes while the chat is open. Enter sends, Esc closes."""
+        if e.key == pygame.K_ESCAPE:
+            self.s.chat_open = False
+        elif e.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self._chat_send()
+        elif e.key == pygame.K_BACKSPACE:
+            self.s.chat_input = self.s.chat_input[:-1]
+        elif e.unicode and e.unicode.isprintable() and len(self.s.chat_input) < 500:
+            self.s.chat_input += e.unicode
+
+    def _chat_send(self) -> None:
+        text = self.s.chat_input.strip()
+        self.s.chat_input = ""
+        if not text:
+            return
+        # Show it immediately as "you", and hand it to the listen thread to put
+        # on the socket. The reply comes back as a normal "reply" event.
+        self.s.chat_log.append(("you", text))
+        del self.s.chat_log[:-200]
+        try:
+            self.s.outbox.put_nowait({"type": "say", "text": text})
+        except Exception:
+            pass
+
+    def _wrap_chat(self, maxw: int) -> list:
+        """Word-wrap the recent log to the panel width, as (who, line) rows."""
+        fo = self.f["monosm"]
+        out: list = []
+        for who, text in self.s.chat_log[-40:]:
+            prefix = "you> " if who == "you" else "jarvis> "
+            cur = ""
+            for w in (prefix + str(text)).split(" "):
+                trial = (cur + " " + w).strip()
+                if fo.size(trial)[0] <= maxw or not cur:
+                    cur = trial
+                else:
+                    out.append((who, cur))
+                    cur = w
+            if cur:
+                out.append((who, cur))
+        return out
+
+    def _fit_tail(self, s: str, font: str, maxw: int) -> str:
+        """Keep the END of a string visible - the caret follows the typing."""
+        fo = self.f[font]
+        while s and fo.size(s)[0] > maxw:
+            s = s[1:]
+        return s
+
+    def _chat_panel(self) -> None:
+        """Left side: an OPEN/CLOSE CHAT button, and the chat panel when open."""
+        u = self.u
+        self._chat_rects = []
+        bx, by = int(self.W * 0.038), int(self.H * 0.108)
+        bw, bh = int(132 * u), int(26 * u)
+        btn = pygame.Rect(bx, by, bw, bh)
+        open_ = self.s.chat_open
+        pygame.draw.rect(self.screen, (6, 20, 22), btn)
+        pygame.draw.rect(self.screen, TEAL if open_ else TEAL_DEEP, btn, 1)
+        self._txt("CLOSE CHAT" if open_ else "OPEN CHAT", "monosm",
+                  TEAL_HOT if open_ else TEAL, btn.center, "center")
+        self._chat_rects.append(btn)
+        if not open_:
+            return
+
+        px, pw = int(self.W * 0.030), int(self.W * 0.300)
+        ptop, pbot = int(self.H * 0.160), int(self.H * 0.905)
+        panel = pygame.Rect(px, ptop, pw, pbot - ptop)
+        veil = pygame.Surface((panel.w, panel.h), pygame.SRCALPHA)
+        veil.fill((3, 12, 15, 236))
+        self.screen.blit(veil, (panel.left, panel.top))
+        pygame.draw.rect(self.screen, TEAL_MID, panel, 1)
+        pad = int(12 * u)
+        self._txt("CHAT  -  DESK", "sm", TEAL, (panel.left + pad, panel.top + pad))
+
+        # Input box pinned to the bottom, with a blinking caret.
+        ih = int(30 * u)
+        ibox = pygame.Rect(panel.left + pad, panel.bottom - pad - ih,
+                           panel.w - 2 * pad, ih)
+        pygame.draw.rect(self.screen, (5, 16, 18), ibox)
+        pygame.draw.rect(self.screen, TEAL, ibox, 1)
+        caret = "_" if int(self.t * 2) % 2 == 0 else " "
+        shown = self._fit_tail("> " + self.s.chat_input + caret, "mono",
+                               ibox.w - int(12 * u))
+        self._txt(shown, "mono", TEAL_HOT,
+                  (ibox.left + int(6 * u), ibox.centery), "midleft")
+
+        # The log, between title and input, newest at the bottom.
+        log_top = panel.top + pad + int(24 * u)
+        log_bot = ibox.top - int(8 * u)
+        lh = self.f["monosm"].get_height() + int(3 * u)
+        maxlines = max(1, (log_bot - log_top) // lh)
+        rows = self._wrap_chat(panel.w - 2 * pad)
+        if not rows:
+            self._txt("type below and press Enter", "monosm", TEXT_FAINT,
+                      (panel.left + pad, log_top))
+        for who, line in rows[-maxlines:]:
+            self._txt(line, "monosm", TEAL if who == "you" else TEXT,
+                      (panel.left + pad, log_top))
+            log_top += lh
 
     # ── the ring ─────────────────────────────────────────────────────────────
 
@@ -1103,6 +1232,12 @@ def _apply(s: HudState, ev: dict) -> None:
     elif kind == "reply":
         s.state = "speaking"
         s.task = str(ev.get("text", ""))[:90]
+        # Also show the full reply in the desk chat, so a typed conversation
+        # reads as a conversation rather than a one-line status.
+        reply = str(ev.get("text", "")).strip()
+        if reply:
+            s.chat_log.append(("jarvis", reply))
+            del s.chat_log[:-200]
 
     elif kind == "cost":
         s.spend += float(ev.get("turn_usd") or 0.0)
@@ -1132,7 +1267,16 @@ def _listen(s: HudState) -> None:
                     try:
                         _apply(s, json.loads(ws.recv(timeout=1.0)))
                     except TimeoutError:
-                        continue
+                        pass
+                    # Send anything the chat has queued. Done on THIS thread,
+                    # which owns the socket - the sync client is not safe to
+                    # send on from the pump thread. Up to ~1s latency, which is
+                    # invisible next to the model turn that follows.
+                    try:
+                        while True:
+                            ws.send(json.dumps(s.outbox.get_nowait()))
+                    except queue.Empty:
+                        pass
         except Exception:
             s.connected = False
             s.model = ""
