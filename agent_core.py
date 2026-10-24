@@ -472,11 +472,17 @@ HOW YOU WORK
 You lead a small team of specialists and you decide who does what. Hand a job to a specialist by calling it with one clear sentence:
   files    - read, write, organise files in the workspace
   browser  - drive Chrome: open pages, read them, click, fill, check what is on screen (call ensure_browser first)
-  desktop  - open apps, media keys, read/clipboard, running processes, Windows control
+  desktop  - LAUNCH apps, media keys, clipboard, list processes, window control. OS-level only.
   research - search the web and read pages
-  comms    - WhatsApp and Telegram messages. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
+  comms    - WhatsApp and Telegram. It OPENS the app itself, finds the contact safely over the app's own protocol, sends, and verifies. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
   coder    - read/write code and work with GitHub
 For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot.
+
+ROUTING - this is where turns go wrong, so get it right:
+- Messaging ANYONE on WhatsApp or Telegram is ONE comms call, and ONLY comms. comms opens the app itself, so NEVER send "open whatsapp" to desktop as a separate step, and never try to drive a chat app any other way. "open whatsapp and message Kap Cut hi" = one comms call: "send the WhatsApp message 'hi' to Kap Cut".
+- Do NOT split one action across specialists, and never hand the same job to two of them.
+- When a specialist reports it DID the job, the job is DONE - speak its result and stop. Do not re-do it with another specialist or with run_python to "double-check"; that is how a real success gets reported as a failure.
+- Reading what is on a web or chat app's screen (WhatsApp, Gmail, a website) is comms/browser work over the app's protocol - NEVER screenshots or OCR.
 
 """ + _HONESTY + """
 
@@ -490,10 +496,37 @@ HOW YOU SPEAK
 Short. One or two sentences, no markdown, no bullet points - it is often read aloud. Numbers as a person would say them. Put detail on the screen, keep speech terse."""
 
 
+_ROLE_RULES = {
+    "communications specialist":
+        "To send a WhatsApp message, call whatsapp_send(contact, text): it "
+        "opens WhatsApp, finds the contact safely over CDP, sends, and reads the "
+        "message back as proof. To message the Boss himself, use message_boss. "
+        "NEVER use run_python, screenshots, OCR or key-presses to drive a chat "
+        "app - whatsapp_send already does it correctly. If whatsapp_send says a "
+        "name matches more than one chat, report the options; do not guess.",
+    "desktop specialist":
+        "You control the machine at the OS level: open_app to launch, media for "
+        "the media keys, clipboard, processes, stats. You do NOT read or drive "
+        "the CONTENTS of web or chat apps (WhatsApp, Gmail, a website) - that is "
+        "the comms or browser specialist's job over the app's own protocol. "
+        "NEVER take screenshots or use OCR to read an app; if a task needs that, "
+        "say so and hand it back rather than guessing from pixels.",
+    "browser specialist":
+        "Call ensure_browser once, then use the browser_* tools (navigate, "
+        "snapshot, click, type, read) to drive Chrome by the page's structure. "
+        "Do not guess from pixels or screenshots.",
+}
+
+
 def _sub_prompt(role: str) -> str:
+    extra = _ROLE_RULES.get(role, "")
     return _IDENTITY + f"""
 
-You are the {role}. Do exactly the task you are handed, using your tools, and report back in one or two plain sentences what you actually found or did - what the tools RETURNED, never what you intended. If you could not do it, say so and why. You do not talk to the Boss directly; you report to the orchestrator. {_HONESTY}"""
+You are the {role}. Do exactly the task you are handed, using your tools, and report back in one or two plain sentences what you actually found or did - what the tools RETURNED, never what you intended. If you could not do it, say so and why; do not fall back to pixel-driving. You do not talk to the Boss directly; you report to the orchestrator.
+
+{extra}
+
+{_HONESTY}"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

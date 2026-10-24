@@ -52,12 +52,62 @@ import safety
 # Jarvis's Chrome and WhatsApp never fight over one endpoint.
 PORT = int(os.environ.get("WHATSAPP_CDP_PORT", "9223"))
 CDP = f"http://127.0.0.1:{PORT}"
-APP_DIR = os.environ.get(
-    "WHATSAPP_APP_DIR",
-    r"C:\Program Files\WindowsApps"
-    r"\5319275A.WhatsAppDesktop_2.2636.100.0_x64__cv1g1gvanyjgm")
 APP_EXE = "WhatsApp.Root.exe"
 READY_TIMEOUT = 45.0
+
+# The package family name is stable across versions; only the version in the
+# folder name changes. That version is EXACTLY what broke this: the old code
+# hardcoded 2.2636 and the machine was on 2.2640, so it reported "not installed"
+# while WhatsApp sat right there in the Start menu.
+APP_PACKAGE = "5319275A.WhatsAppDesktop"
+_APP_DIR_CACHE: str | None = None
+
+
+def _resolve_app_dir() -> str:
+    """Where WhatsApp Desktop actually is, resolved - never hardcoded.
+
+    C:\\Program Files\\WindowsApps is a protected directory that an ordinary
+    process cannot even LIST, so globbing it returns nothing (verified). But
+    Get-AppxPackage reads the package registry, not the directory, and returns
+    the real InstallLocation for whatever version is installed now. That is the
+    one lookup that survives an update.
+
+    Order: an explicit override in .env, then the live package location, then a
+    best-effort guess so the error message at least names a plausible path."""
+    global _APP_DIR_CACHE
+    override = (os.environ.get("WHATSAPP_APP_DIR") or "").strip()
+    if override:
+        return override
+    if _APP_DIR_CACHE:
+        return _APP_DIR_CACHE
+    try:
+        ps = f"(Get-AppxPackage *{APP_PACKAGE}*).InstallLocation"
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
+                            "-Command", ps], capture_output=True, text=True,
+                           timeout=25, creationflags=0x08000000)
+        loc = (r.stdout or "").strip().splitlines()
+        if loc and loc[0].strip():
+            _APP_DIR_CACHE = loc[0].strip()
+            return _APP_DIR_CACHE
+    except Exception:
+        pass
+    return rf"C:\Program Files\WindowsApps\{APP_PACKAGE}_x64__cv1g1gvanyjgm"
+
+
+SEL = {
+    # The search box's aria-label CHANGES once it has focus or content, so it
+    # is matched by a chain, not one string. Relying on the label alone made
+    # open() fail with "the search box is not on screen" while it was in fact
+    # right there, holding leftover text from the previous call.
+    "search": '[aria-label="Search or start a new chat"]',
+    "search_alt": 'div[contenteditable="true"][data-tab="3"]',
+    "search_any": '#side [role="textbox"]',
+    "row": '#pane-side [role="row"]',
+    "main": "#main",
+    "composer": 'footer [contenteditable="true"][data-tab="10"]',
+    "msg_row": '#main [role="row"]',
+    "qr": "[data-ref]",
+}
 
 SEL = {
     # The search box's aria-label CHANGES once it has focus or content, so it
@@ -131,11 +181,12 @@ def start_app(restart: bool = False) -> dict:
                        capture_output=True, check=False)
         time.sleep(2.5)
 
-    exe = os.path.join(APP_DIR, APP_EXE)
+    exe = os.path.join(_resolve_app_dir(), APP_EXE)
     if not os.path.isfile(exe):
         raise NotRunning(
-            f"WhatsApp Desktop was not found at {exe}. If it updated, its "
-            f"folder version changed - set WHATSAPP_APP_DIR in .env.")
+            f"WhatsApp Desktop was not found at {exe}. Install it from the "
+            f"Microsoft Store, or if it is installed elsewhere set "
+            f"WHATSAPP_APP_DIR in .env.")
 
     env = dict(os.environ)
     env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = f"--remote-debugging-port={PORT}"
@@ -359,8 +410,10 @@ def open(contact: str) -> dict:
     if comp.count():
         current = (comp.first.get_attribute("aria-label") or "")
         current = current.replace("Type a message to", "").strip()
-        if current and _matches(want, current):
-            return {"ok": True, "contact": current, "label": current,
+        header = _header_name(page)
+        if (header and _matches(want, header)) or (current and _matches(want, current)):
+            who = header or current
+            return {"ok": True, "contact": who, "label": current,
                     "reused": True}
 
     # Start from a known state. A previous call leaves the search pane open
@@ -497,20 +550,49 @@ def open(contact: str) -> dict:
     if not page.locator(SEL["main"]).count():
         raise WrongChat(f"clicked a result for {want!r} but no chat opened")
 
-    # THE GUARD. The message box names its recipient; read it back.
+    # THE GUARD. Confirm the chat that OPENED is the one asked for - but read
+    # its HEADER name, not only the message box. A contact saved by NUMBER shows
+    # "Type a message to +91 ..." in the box while the header (and the row we
+    # picked) says the real name. Reading only the box rejected chats that had
+    # opened perfectly: verified live on "Kap Cut", whose header says "Kap Cut"
+    # but whose composer says a bare number.
     comp = page.locator(SEL["composer"])
     if not comp.count():
         raise WrongChat(f"{want!r} opened but there is no message box - "
                         f"nothing was typed")
     label = comp.first.get_attribute("aria-label") or ""
-    who = label.replace("Type a message to", "").strip() or "(unnamed)"
+    box_who = label.replace("Type a message to", "").strip()
+    header = _header_name(page)
+    who = header or box_who or "(unnamed)"
 
-    if not _matches(want, who):
+    # The row was already chosen because its NAME matched the request; this just
+    # confirms the open landed there. Either the header OR the box naming the
+    # contact is proof enough, since a number-saved contact names it in only one.
+    if not (_matches(want, header) or (box_who and _matches(want, box_who))):
         page.keyboard.press("Escape")
         raise WrongChat(
-            f"asked for {want!r} but the message box says {who!r} - nothing "
-            f"was typed. Say which one you meant.")
+            f"asked for {want!r} but the open chat is {who!r} - nothing was "
+            f"typed. Say which one you meant.")
     return {"ok": True, "contact": who, "label": label}
+
+
+def _header_name(page) -> str:
+    """The contact name shown in the OPEN chat's header, or ''.
+
+    For most chats the header's span[title] is the name; for some it is absent
+    and the first line of the header text carries it instead - verified live on
+    "Kap Cut", which shows no span[title] but a header reading "Kap Cut" while
+    its message box shows only the phone number."""
+    try:
+        return (page.evaluate("""() => {
+            const h = document.querySelector('#main header');
+            if (!h) return "";
+            const t = h.querySelector('span[title]');
+            if (t && t.getAttribute('title')) return t.getAttribute('title');
+            return (h.innerText || '').split('\\n')[0].trim();
+        }""") or "").strip()
+    except Exception:
+        return ""
 
 
 def _norm(s: str) -> str:
