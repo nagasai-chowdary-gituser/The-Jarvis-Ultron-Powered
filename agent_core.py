@@ -373,12 +373,16 @@ WEB_FETCH = _t("web_fetch", "Fetch a URL's readable text (fenced as data).",
     {"url": {"type": "string"}}, ["url"], _web_fetch)
 
 SCHEDULE_JOB = _t("schedule_job",
-    "Hand waiting/polling/watching to the background worker. Returns a job id "
-    "immediately. The ONLY way to do anything that waits. kinds: watch_chat "
-    "(params.contact), reminder (params.text), poll_url (params.url), "
-    "check_process (params.name). params.urgency='call' rings the Boss.",
+    "Hand work to the background worker. Returns a job id immediately. The ONLY "
+    "way to do anything that waits or runs after this turn ends. kinds: "
+    "agent_task (params.request - a WHOLE job to carry out in the background "
+    "with the full brain, e.g. 'research X and message me a summary'; it runs "
+    "once and reports), watch_chat (params.contact), reminder (params.text), "
+    "poll_url (params.url), check_process (params.name). params.urgency='call' "
+    "rings the Boss instead of messaging.",
     {"kind": {"type": "string",
-              "enum": ["watch_chat", "reminder", "poll_url", "check_process"]},
+              "enum": ["agent_task", "watch_chat", "reminder", "poll_url",
+                       "check_process"]},
      "params": {"type": "object"},
      "every_seconds": {"type": "integer"},
      "until": {"type": "string"}},

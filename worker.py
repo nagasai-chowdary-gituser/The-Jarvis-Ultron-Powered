@@ -382,8 +382,35 @@ def check_process(job: dict) -> dict:
     return {"stop": False, "report": report}
 
 
+def agent_task(job: dict) -> dict:
+    """Run a whole request through the full orchestrator, in the background.
+
+    This is what makes "research X and send me a report" a thing Jarvis can be
+    left to do: the request was captured in an authorised turn, and here the
+    same terra brain - specialists, MCP, memory and all - carries it out while
+    nobody is at the keyboard, then hands the finished answer back to the Boss.
+
+    One-shot by design. terra is not cheap, so a background task does its work
+    once and reports; it does not re-run every tick. Anything that genuinely
+    must repeat until a condition is a watch_chat or a poll, which are cheap."""
+    import agent_core
+    req = (job["params"].get("request") or job["params"].get("task") or "").strip()
+    if not req:
+        return {"stop": True, "note": "agent_task had no request"}
+    try:
+        reply = agent_core.run_turn(req, Transport.WORKER, channel="chan:worker")
+        return {"stop": True, "report": reply, "note": "agent task done"}
+    except Exception as e:
+        log(f"job #{job['id']} agent_task crashed: {traceback.format_exc()[-400:]}")
+        return {"stop": True,
+                "report": f"I could not finish that background task: "
+                          f"{type(e).__name__}",
+                "note": f"{type(e).__name__}: {e}"}
+
+
 KINDS = {"watch_chat": watch_chat, "reminder": reminder,
-         "poll_url": poll_url, "check_process": check_process}
+         "poll_url": poll_url, "check_process": check_process,
+         "agent_task": agent_task}
 
 # MONITORS ARE READ-ONLY, AND THAT IS STRUCTURAL RATHER THAN A RULE.
 #
