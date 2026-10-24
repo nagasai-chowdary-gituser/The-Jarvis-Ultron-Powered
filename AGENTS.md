@@ -43,10 +43,14 @@ with the best OpenAI model, MCP, and sub-agents. What runs now:
   panel that was always empty.
 
 Tests: `tests/test_jarvis.py` + `tests/test_agent_core.py`, **222 passing**,
-offline. Proven live: orchestrator→files specialist→MCP filesystem write/read,
-and the same via a background `agent_task`. Not yet confirmed on the owner's
-machine (his side only, see memory): the browser specialist driving real
-Chrome, the phone, and the desk mic.
+offline. Proven live on the owner's machine (2026-10-24): filesystem MCP
+write/read, a background `agent_task`, **WhatsApp send + verify** (dynamic
+install path via Get-AppxPackage; number-saved contacts verified by the chat
+header), the **browser specialist driving real Chrome via Playwright MCP**
+(ensure_browser → navigate → snapshot → evaluate; recovers from a stale
+port-less Chrome), and multi-part routing across specialists. Still his-side
+only: the phone and the desk mic (audio hardware). windows-mcp is not
+installed, so the desktop specialist uses lib/desktop + run_python.
 
 Everything from §1 down is the prior design; it remains true except where this
 section revises it.
