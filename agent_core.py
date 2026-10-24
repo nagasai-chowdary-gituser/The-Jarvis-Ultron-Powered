@@ -35,6 +35,7 @@ WHAT THIS REPLACES, AND WHY
 from __future__ import annotations
 
 import json
+import threading
 
 from openai import OpenAI
 
@@ -155,18 +156,44 @@ def guard(tool: Tool, args: dict, ctx: Ctx) -> dict | None:
 
 class Agent:
     def __init__(self, name: str, model: str, effort: str, instructions: str,
-                 tools: list[Tool], max_rounds: int):
+                 tools: list[Tool], max_rounds: int,
+                 mcp_groups: list[str] | None = None):
         self.name = name
         self.model = model
         self.effort = effort
         self.instructions = instructions
-        self.tools = {t.name: t for t in tools}
-        self.specs = [t.spec() for t in tools]
+        self._static = list(tools)
         self.max_rounds = max_rounds
+        # Server GROUPS, not frozen tools. A specialist's MCP tools are resolved
+        # fresh on every run, so a server that was still downloading (Playwright,
+        # first time) is simply absent now and present on the next turn - the
+        # team never has to WAIT for a server to be ready before it can answer.
+        self.mcp_groups = mcp_groups or []
 
-    def run(self, task: str, ctx: Ctx, client: OpenAI) -> str:
-        """Run until the model stops asking for tools. Returns its final text."""
-        convo: list[dict] = [{"role": "user", "content": task}]
+    def _tools(self) -> dict:
+        """The tool set for this run: static tools plus whatever MCP servers in
+        this agent's groups are up right now."""
+        tools = {t.name: t for t in self._static}
+        for g in self.mcp_groups:
+            servers = mcp_config.AGENT_SERVERS.get(g, [])
+            for d in mcp_client.manager().tools_for(servers):
+                t = mcp_tool(d)
+                tools[t.name] = t
+        return tools
+
+    def run(self, task: str, ctx: Ctx, client: OpenAI, *,
+            history: list[dict] | None = None,
+            instructions: str | None = None) -> str:
+        """Run until the model stops asking for tools. Returns its final text.
+
+        One loop for every agent - orchestrator and specialist alike. The
+        orchestrator seeds `history` and a per-turn `instructions`; a specialist
+        gets a single task line and its own prompt."""
+        tools = self._tools()
+        specs = [t.spec() for t in tools.values()]
+        instr = instructions or self.instructions
+        convo: list[dict] = list(history or []) + [{"role": "user",
+                                                     "content": task}]
         effort = self.effort
         failures = 0
 
@@ -175,8 +202,8 @@ class Agent:
                 return "I hit my runaway ceiling - that is a loop on my side."
             try:
                 resp = client.responses.create(
-                    model=self.model, instructions=self.instructions,
-                    input=convo, tools=self.specs,
+                    model=self.model, instructions=instr,
+                    input=convo, tools=specs,
                     reasoning={"effort": effort},
                     max_output_tokens=models.MAX_OUTPUT_TOKENS, store=False)
             except Exception as e:
@@ -197,7 +224,7 @@ class Agent:
                     args = json.loads(fc.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = self._dispatch(getattr(fc, "name", ""), args, ctx)
+                result = self._dispatch(getattr(fc, "name", ""), args, ctx, tools)
                 if not result.get("ok"):
                     round_failed = True
                 convo.append({
@@ -212,8 +239,8 @@ class Agent:
                     effort = "high"
         return "I ran as far as I usefully could on that and should hand it back."
 
-    def _dispatch(self, name: str, args: dict, ctx: Ctx) -> dict:
-        tool = self.tools.get(name)
+    def _dispatch(self, name: str, args: dict, ctx: Ctx, tools: dict) -> dict:
+        tool = tools.get(name)
         if tool is None:
             return {"ok": False, "error": f"no tool named {name!r}"}
 
@@ -471,6 +498,8 @@ You are the {role}. Do exactly the task you are handed, using your tools, and re
 _TEAM: Agent | None = None
 _CLIENT: OpenAI | None = None
 _MCP_REPORT: dict = {}
+_BUILD_LOCK = threading.Lock()
+_MCP_STARTED = False
 
 
 def _client() -> OpenAI:
@@ -480,29 +509,55 @@ def _client() -> OpenAI:
     return _CLIENT
 
 
-def _mcp_tools(server_names: list[str]) -> list[Tool]:
-    descriptors = mcp_client.manager().tools_for(server_names)
-    return [mcp_tool(d) for d in descriptors]
+def _start_mcp_in_background() -> None:
+    """Start the MCP servers off the turn path, once.
+
+    THIS IS WHY A SIMPLE MESSAGE NO LONGER HANGS. build_team used to call
+    manager().start() inline, which blocks while each server completes its
+    handshake - and Playwright's FIRST run downloads a browser, minutes of it.
+    So even "hey" sat on THINKING forever, because the turn could not reach the
+    model until every server was up. Now the servers warm up on their own
+    thread; the team is built immediately with whatever is ready, and each
+    specialist picks up its MCP tools on the next turn after its server is up."""
+    global _MCP_STARTED
+    with _BUILD_LOCK:
+        if _MCP_STARTED:
+            return
+        _MCP_STARTED = True
+
+    def work() -> None:
+        global _MCP_REPORT
+        try:
+            _MCP_REPORT = mcp_client.manager().start(mcp_config.server_specs())
+        except Exception as e:
+            state.record_error("agent.mcp_start", e)
+
+    threading.Thread(target=work, daemon=True, name="mcp-start").start()
 
 
 def build_team(force: bool = False) -> Agent:
-    """Start the MCP servers and assemble the orchestrator. Cached.
+    """Assemble the orchestrator. Cached, and does NOT wait on MCP.
 
-    Called once per process. MCP servers that fail to start are simply absent
-    from the specialists that would have used them, which fall back to
-    run_python - the team is smaller, never broken."""
-    global _TEAM, _MCP_REPORT
-    if _TEAM is not None and not force:
-        return _TEAM
+    MCP servers warm up in the background; a specialist resolves its MCP tools
+    per run, so a server that is not up yet is simply absent now and present on
+    a later turn. The team is never blocked on a server, and a server that
+    never starts just means that specialist falls back to run_python."""
+    global _TEAM
+    with _BUILD_LOCK:
+        if _TEAM is not None and not force:
+            built = _TEAM
+        else:
+            built = None
+    _start_mcp_in_background()
+    if built is not None:
+        return built
 
-    _MCP_REPORT = mcp_client.manager().start(mcp_config.server_specs())
     client = _client()
 
-    def sub(name, role, server_group, extra_tools):
-        tools = [RUN_PYTHON] + extra_tools + _mcp_tools(
-            mcp_config.AGENT_SERVERS.get(server_group, []))
+    def sub(name, role, group, extra_tools):
         return Agent(name, models.BRAIN, "medium", _sub_prompt(role),
-                     tools, MAX_ROUNDS_SUB)
+                     [RUN_PYTHON] + extra_tools, MAX_ROUNDS_SUB,
+                     mcp_groups=[group])
 
     files = sub("files", "files specialist", "files", [])
     browser = sub("browser", "browser specialist", "browser", [ENSURE_BROWSER])
@@ -519,9 +574,11 @@ def build_team(force: bool = False) -> Agent:
     orch_tools += [RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB, ASK_BOSS,
                    MESSAGE_BOSS]
 
-    _TEAM = Agent("jarvis", models.BRAIN_HEAVY, "medium",
-                  ORCH_PROMPT, orch_tools, MAX_ROUNDS_ORCH)
-    return _TEAM
+    team = Agent("jarvis", models.BRAIN_HEAVY, "medium",
+                 ORCH_PROMPT, orch_tools, MAX_ROUNDS_ORCH)
+    with _BUILD_LOCK:
+        _TEAM = team
+    return team
 
 
 def mcp_report() -> dict:
@@ -580,8 +637,8 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     history = brain._recent_turns(channel)
     instructions = team.instructions + state.facts_block() + (
         state.as_context(jid) if jid else "")
-    convo = history + [{"role": "user", "content": text}]
-    reply = _run_with_history(team, convo, ctx, instructions)
+    reply = team.run(text, ctx, _client(), history=history,
+                     instructions=instructions)
 
     reply = brain.vet(reply, ctx.evidence) or "[guess] Done."
     emit({"type": "reply", "text": reply})
@@ -632,46 +689,3 @@ def voice_dispatcher(transport: Transport, emit):
             return {"ok": True, "spoken": reply}
         return {"ok": False, "error": f"voice has no tool named {name!r}"}
     return dispatch
-
-
-def _run_with_history(agent: Agent, convo: list[dict], ctx: Ctx,
-                      instructions: str) -> str:
-    """Agent.run, but seeded with prior turns and this turn's instructions."""
-    client = _client()
-    effort = agent.effort
-    failures = 0
-    for _ in range(agent.max_rounds):
-        if ctx.session.calls >= safety.RUNAWAY_TOOL_CALLS:
-            return "I hit my runaway ceiling - that is a loop on my side."
-        try:
-            resp = client.responses.create(
-                model=agent.model, instructions=instructions,
-                input=convo, tools=agent.specs,
-                reasoning={"effort": effort},
-                max_output_tokens=models.MAX_OUTPUT_TOKENS, store=False)
-        except Exception as e:
-            state.record_error("agent.orchestrator.model", e)
-            return f"I could not reach the model: {type(e).__name__}"
-        models.record(resp, agent.model)
-        for item in resp.output:
-            convo.append(brain._echo(item))
-        calls = [o for o in resp.output
-                 if getattr(o, "type", None) == "function_call"]
-        if not calls:
-            return (resp.output_text or "").strip()
-        round_failed = False
-        for fc in calls:
-            try:
-                args = json.loads(fc.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            result = agent._dispatch(getattr(fc, "name", ""), args, ctx)
-            if not result.get("ok"):
-                round_failed = True
-            convo.append({"type": "function_call_output", "call_id": fc.call_id,
-                          "output": json.dumps(result, default=str)[:TOOL_OUTPUT_LIMIT]})
-        if round_failed:
-            failures += 1
-            if failures == 1 and effort != "high":
-                effort = "high"
-    return "I ran as far as I usefully could and should hand this back to you."
