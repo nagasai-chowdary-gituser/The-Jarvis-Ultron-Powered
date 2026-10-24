@@ -38,6 +38,22 @@ with the best OpenAI model, MCP, and sub-agents. What runs now:
 - **Background autonomy**: `schedule_job(kind="agent_task", params.request=…)`
   runs a whole request through the orchestrator in `worker.py` after the turn
   ends and reports back (Telegram, or a call if `urgency='call'`).
+- **Final-boss intelligence (2026-10-24):**
+  - **Plan first.** The orchestrator's first call on any real task is
+    `plan(task, helpers, steps)` — named, shown on the HUD and in the desk
+    chat — then it executes without pausing.
+  - **Intelligent memory** (`memory.py`): every memory carries a
+    `text-embedding-3-small` embedding; each turn pulls the most *relevant*
+    memories (not the most recent) into the prompt, and `capture_turn()` learns
+    durable facts in the background. Degrades to keyword search if embeddings
+    are down. Verified: "who signs off on spending?" recalls a fact stored as
+    "Priya approves budgets".
+  - **Native app control** (`lib/desktop`): `read_window` / `click_control` /
+    `click_sequence` / `set_control` drive *any* native app through Windows UI
+    Automation (the accessibility tree) — never pixels, never OCR. Verified:
+    Calculator 7×6=42 and 123+456=579 by control name.
+  - **Parallel helpers**: distinct specialists run concurrently (thread-safe
+    session counters), so "check my CPU and count my files" does both at once.
 - **UI untouched** (`hud_gl.py`, `static/hud.html`); the backend emits the
   events they already read, and a new `watch_broadcaster` fills the LIVE WATCH
   panel that was always empty.
