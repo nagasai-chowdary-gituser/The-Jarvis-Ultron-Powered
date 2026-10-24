@@ -31,6 +31,7 @@ playwright==1.49.1        # Chrome over CDP - a protocol, not pixels
 beautifulsoup4==4.12.3
 pandas==2.2.3
 pillow==11.0.0
+uiautomation==2.0.29        # native app control via the accessibility tree, not pixels
 
 # Deletion means the recycle bin, never os.remove. safety.trash() depends on it.
 send2trash==1.8.3

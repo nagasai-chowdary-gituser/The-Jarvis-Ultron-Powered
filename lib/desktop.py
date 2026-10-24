@@ -261,3 +261,171 @@ def stats() -> dict:
             "memory_percent": vm.percent,
             "memory_free_gb": round(vm.available / 1e9, 1),
             "disk_free_gb": round(free / 1e9, 1)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Native app control — Windows UI Automation (the accessibility protocol).
+#
+# This is how Jarvis drives apps that have NO web view and NO API: Settings,
+# File Explorer, Notepad, installers, native dialogs. It reads and clicks real
+# UI ELEMENTS by their accessibility name and type - never a pixel coordinate,
+# never OCR. The same principle as browser.py (the DOM) and whatsapp.py (CDP):
+# address things by identity, so a window that moved or a theme that changed
+# does not break anything.
+#
+# uiautomation wraps the same UIAutomation COM API that screen readers use.
+# Imported lazily so lib/desktop costs nothing until a native app is driven.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INTERACTIVE = {"Button", "Edit", "Hyperlink", "MenuItem", "ListItem",
+                "CheckBox", "RadioButton", "TabItem", "ComboBox", "TreeItem",
+                "SplitButton", "Text", "Document"}
+
+
+def _auto():
+    import uiautomation as auto
+    auto.SetGlobalSearchTimeout(2.0)          # never hang on a missing control
+    return auto
+
+
+def _find_window(title: str):
+    """The top-level window whose name contains `title`, case-insensitive."""
+    auto = _auto()
+    want = (title or "").strip().lower()
+    for w in auto.GetRootControl().GetChildren():
+        try:
+            if w.ControlTypeName == "WindowControl" and w.Name and (
+                    not want or want in w.Name.lower()):
+                return w
+        except Exception:
+            continue
+    return None
+
+
+def windows() -> list[dict]:
+    """Open top-level windows, as [{title, class}]. Cheaper than a screenshot."""
+    auto = _auto()
+    out = []
+    for w in auto.GetRootControl().GetChildren():
+        try:
+            if w.ControlTypeName == "WindowControl" and (w.Name or "").strip():
+                out.append({"title": w.Name[:80], "class": w.ClassName[:40]})
+        except Exception:
+            continue
+    return out
+
+
+def read_window(title: str, max_items: int = 50) -> dict:
+    """The interactive controls of a window, so Jarvis can SEE what is in it.
+
+    Returns name + type (+ value for fields) for buttons, fields, list items,
+    menu items and the like - what a person would read and act on - rather than
+    the whole accessibility tree, which is huge and mostly structure."""
+    win = _find_window(title)
+    if win is None:
+        return {"ok": False, "error": f"no open window matches {title!r}",
+                "open": [w["title"] for w in windows()][:12]}
+    items: list[dict] = []
+
+    def walk(ctrl, depth: int) -> None:
+        if len(items) >= max_items or depth > 7:
+            return
+        try:
+            kids = ctrl.GetChildren()
+        except Exception:
+            return
+        for c in kids:
+            if len(items) >= max_items:
+                return
+            try:
+                ct = c.ControlTypeName.replace("Control", "")
+                name = (c.Name or "").strip()
+                val = ""
+                if ct in ("Edit", "Document", "ComboBox"):
+                    try:
+                        vp = c.GetValuePattern()
+                        val = (vp.Value or "")[:60] if vp else ""
+                    except Exception:
+                        val = ""
+                if ct in _INTERACTIVE and (name or val):
+                    items.append({"type": ct, "name": name[:60], "value": val})
+                walk(c, depth + 1)
+            except Exception:
+                continue
+
+    walk(win, 0)
+    return {"ok": True, "window": win.Name[:80], "controls": items}
+
+
+def _find_control(win, name: str, kinds=None):
+    """A control under `win` whose name matches `name` (exact first, then substring)."""
+    want = (name or "").strip().lower()
+    best = None
+
+    def walk(ctrl, depth: int) -> None:
+        nonlocal best
+        if best is not None or depth > 8:
+            return
+        try:
+            kids = ctrl.GetChildren()
+        except Exception:
+            return
+        for c in kids:
+            if best is not None:
+                return
+            try:
+                ct = c.ControlTypeName.replace("Control", "")
+                cn = (c.Name or "").strip().lower()
+                if cn and (kinds is None or ct in kinds):
+                    if cn == want:
+                        best = c
+                        return
+                    if want and want in cn and best is None:
+                        best = c          # keep first substring hit as fallback
+                walk(c, depth + 1)
+            except Exception:
+                continue
+
+    walk(win, 0)
+    return best
+
+
+def click_control(title: str, control: str) -> dict:
+    """Click a control in a window by its accessibility NAME, not a coordinate.
+
+    Prefers the Invoke pattern (works without the window in front); falls back
+    to a real click, bringing the window forward first."""
+    win = _find_window(title)
+    if win is None:
+        return {"ok": False, "error": f"no open window matches {title!r}"}
+    target = _find_control(win, control)
+    if target is None:
+        return {"ok": False,
+                "error": f"no control named {control!r} in {win.Name[:50]!r}",
+                "hint": "call read_window to see the real control names"}
+    try:
+        try:
+            target.GetInvokePattern().Invoke()
+            return {"ok": True, "clicked": control, "how": "invoke"}
+        except Exception:
+            win.SetActive()
+            target.Click(simulateMove=False)
+            return {"ok": True, "clicked": control, "how": "click"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def set_control(title: str, control: str, text: str) -> dict:
+    """Put text into a field by name (SetValue - no keystroke races)."""
+    win = _find_window(title)
+    if win is None:
+        return {"ok": False, "error": f"no open window matches {title!r}"}
+    target = _find_control(win, control, kinds={"Edit", "Document", "ComboBox"})
+    if target is None:
+        return {"ok": False,
+                "error": f"no text field named {control!r} in {win.Name[:50]!r}"}
+    try:
+        target.GetValuePattern().SetValue(text)
+        return {"ok": True, "set": control, "value": text[:60]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}

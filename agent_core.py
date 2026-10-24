@@ -387,6 +387,17 @@ def _desktop(action):
     return run
 
 
+def _desk_call(fn_name):
+    """For lib.desktop functions that already return their own ok-dict."""
+    def run(args, ctx) -> dict:
+        from lib import desktop
+        try:
+            return getattr(desktop, fn_name)(**dict(args))
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return run
+
+
 def _ask_boss(args, ctx) -> dict:
     return {"ok": True, "asked": args.get("question", ""),
             "note": "Ask this and stop; his answer is the next turn."}
@@ -497,6 +508,30 @@ PROCESSES = _t("processes", "List running processes, optionally filtered.",
 STATS = _t("stats", "This machine's CPU, memory and disk right now.",
     {}, [], _desktop(lambda d, a: d.stats()))
 
+LIST_WINDOWS = _t("list_windows",
+    "Open window titles - cheaper than a screenshot, and the title often holds "
+    "the answer.", {}, [], _desk_call("windows"))
+
+READ_WINDOW = _t("read_window",
+    "Read a native app window's interactive controls (buttons, fields, list and "
+    "menu items) by NAME and type, so you can see what is in it. Use this "
+    "instead of a screenshot or OCR - it is the accessibility tree, not pixels.",
+    {"title": {"type": "string",
+               "description": "part of the window title, e.g. 'Settings'"}},
+    ["title"], _desk_call("read_window"))
+
+CLICK_CONTROL = _t("click_control",
+    "Click a control in a native app by its accessibility NAME (as read_window "
+    "shows it), never a coordinate. Works for buttons, menu items, list items.",
+    {"title": {"type": "string"}, "control": {"type": "string"}},
+    ["title", "control"], _desk_call("click_control"))
+
+SET_CONTROL = _t("set_control",
+    "Type text into a named field of a native app (sets the value directly).",
+    {"title": {"type": "string"}, "control": {"type": "string"},
+     "text": {"type": "string"}},
+    ["title", "control", "text"], _desk_call("set_control"))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts
@@ -549,12 +584,14 @@ _ROLE_RULES = {
         "app - whatsapp_send already does it correctly. If whatsapp_send says a "
         "name matches more than one chat, report the options; do not guess.",
     "desktop specialist":
-        "You control the machine at the OS level: open_app to launch, media for "
-        "the media keys, clipboard, processes, stats. You do NOT read or drive "
-        "the CONTENTS of web or chat apps (WhatsApp, Gmail, a website) - that is "
-        "the comms or browser specialist's job over the app's own protocol. "
-        "NEVER take screenshots or use OCR to read an app; if a task needs that, "
-        "say so and hand it back rather than guessing from pixels.",
+        "You control the machine and its NATIVE apps. open_app launches; media "
+        "is the media keys; clipboard, processes, stats for the system. To "
+        "operate a native app (Settings, File Explorer, Notepad, a dialog, an "
+        "installer): call read_window to SEE its controls by name, then "
+        "click_control and set_control to act on them BY NAME - this is the "
+        "accessibility tree, so never screenshots, never OCR, never pixel "
+        "coordinates. WEB or chat apps (WhatsApp, Gmail, a website) are the "
+        "comms or browser specialist's job, not yours - hand those back.",
     "browser specialist":
         "Call ensure_browser once, then use the browser_* tools (navigate, "
         "snapshot, click, type, read) to drive Chrome by the page's structure. "
@@ -644,7 +681,8 @@ def build_team(force: bool = False) -> Agent:
     files = sub("files", "files specialist", "files", [])
     browser = sub("browser", "browser specialist", "browser", [ENSURE_BROWSER])
     desktop = sub("desktop", "desktop specialist", "desktop",
-                  [OPEN_APP, MEDIA, PROCESSES, STATS])
+                  [OPEN_APP, MEDIA, PROCESSES, STATS, LIST_WINDOWS,
+                   READ_WINDOW, CLICK_CONTROL, SET_CONTROL])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH])
     comms = sub("comms", "communications specialist", "comms",
