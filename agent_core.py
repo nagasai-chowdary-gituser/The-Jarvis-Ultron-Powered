@@ -165,6 +165,24 @@ def guard(tool: Tool, args: dict, ctx: Ctx) -> dict | None:
 # An Agent — one Responses loop with a fixed tool set.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Read-only tools with no shared state, safe to run several at once (different
+# URLs, different files). Browser tools are NOT here: there is one page, so two
+# concurrent reads of it would race. Writes are never here.
+_READ_ONLY_FUNCS = {"web_search", "web_fetch", "recall", "stats", "processes",
+                    "list_windows", "read_window", "list_apps"}
+_READ_ONLY_MCP = {"read_file", "read_text_file", "read_multiple_files",
+                  "get_file_info", "list_directory", "list_directory_with_sizes",
+                  "directory_tree", "search_files", "list_allowed_directories"}
+
+
+def _is_read_only(tool) -> bool:
+    if tool is None:
+        return False
+    if tool.name in _READ_ONLY_FUNCS:
+        return True
+    return tool.kind == "mcp" and tool.name in _READ_ONLY_MCP
+
+
 class Agent:
     def __init__(self, name: str, model: str, effort: str, instructions: str,
                  tools: list[Tool], max_rounds: int,
@@ -248,12 +266,15 @@ class Agent:
     def _execute(self, calls, ctx: Ctx, tools: dict) -> list:
         """Run this round's tool calls, in parallel when they are independent.
 
-        Only DISTINCT specialist calls parallelise - each specialist is its own
-        isolated loop on its own resource (desktop UI, files MCP, the browser on
-        9222, WhatsApp on 9223), so "check my CPU and count my files" runs both
-        at once instead of one after the other. Anything else - run_python, the
-        same specialist twice, plan/memory - stays serial and in order, because
-        order can matter there (a read after a click must see the click)."""
+        Two cases parallelise:
+        - DISTINCT specialist calls - each is its own isolated loop on its own
+          resource, so "check my CPU and count my files" runs both at once.
+        - Several READ-ONLY calls (web_fetch of three URLs, read three files) -
+          independent reads with no shared state, so they fetch together instead
+          of one after another, which is most of the wait in a research task.
+        Everything else - run_python, a write, the browser (one page), the same
+        specialist twice - stays serial and in order, because order can matter
+        (a read after a click must see the click)."""
         parsed = []
         for fc in calls:
             try:
@@ -263,11 +284,12 @@ class Agent:
             parsed.append((fc, args))
 
         names = [getattr(fc, "name", "") for fc, _ in parsed]
-        agent_calls = all(tools.get(n) is not None and tools[n].kind == "agent"
-                          for n in names)
         distinct = len(set(names)) == len(names)
+        agent_calls = distinct and all(
+            tools.get(n) is not None and tools[n].kind == "agent" for n in names)
+        read_calls = all(_is_read_only(tools.get(n)) for n in names)
 
-        if len(parsed) > 1 and agent_calls and distinct:
+        if len(parsed) > 1 and (agent_calls or read_calls):
             from concurrent.futures import ThreadPoolExecutor
             ctx.say({"type": "parallel", "calls": len(parsed),
                      "tools": names})
@@ -641,6 +663,11 @@ _ROLE_RULES = {
         "using the same lib.desktop helpers. WEB or chat apps (WhatsApp, Gmail, "
         "a website) are the "
         "comms or browser specialist's job, not yours - hand those back.",
+    "research specialist":
+        "Search with web_search, then read pages with web_fetch. When you need "
+        "to read SEVERAL pages, request them in ONE step (several web_fetch "
+        "calls together) so they load at the same time instead of one after "
+        "another. Report only what the pages actually said.",
     "browser specialist":
         "Call ensure_browser once, then browser_navigate to the page. To READ a "
         "page, take ONE browser_snapshot, or ONE browser_evaluate that returns "
