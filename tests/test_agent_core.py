@@ -200,3 +200,46 @@ def test_voice_dispatcher_rejects_unknown_tool():
     d = agent_core.voice_dispatcher(Transport.PHONE, lambda e: None)
     r = d("nope", {})
     assert r["ok"] is False
+
+
+def test_independent_specialists_run_in_parallel(db):
+    """Two distinct specialist calls in one round overlap, results in order."""
+    import time as _t
+    order = []
+
+    def mk(name):
+        def fn(args, ctx):
+            order.append(f"{name}-start")
+            _t.sleep(0.25)
+            order.append(f"{name}-end")
+            return {"ok": True, "text": name}
+        t = agent_core.Tool(name, "d", {"type": "object", "properties": {}}, fn)
+        t.kind = "agent"
+        return t
+
+    agent = agent_core.Agent("o", "m", "low", "i", [mk("x"), mk("y")], 5)
+    tools = agent._tools()
+
+    class FC:
+        def __init__(self, n):
+            self.name = n; self.arguments = "{}"; self.call_id = n
+
+    pairs = agent._execute([FC("x"), FC("y")], _ctx(), tools)
+    assert [p[1]["text"] for p in pairs] == ["x", "y"]        # order preserved
+    # They overlapped: y started before x finished.
+    assert order.index("y-start") < order.index("x-end")
+
+
+def test_run_python_stays_serial(db):
+    """run_python is NOT parallelised even if two are requested in one round."""
+    agent = agent_core.Agent("o", "m", "low", "i", [agent_core.RUN_PYTHON], 5)
+    tools = agent._tools()
+
+    class FC:
+        def __init__(self, cid):
+            self.name = "run_python"
+            self.arguments = '{"code": "print(1)", "why": "t"}'
+            self.call_id = cid
+
+    pairs = agent._execute([FC("a"), FC("b")], _ctx(), tools)
+    assert len(pairs) == 2 and all(p[1].get("ok") for p in pairs)

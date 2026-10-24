@@ -99,6 +99,10 @@ class Ctx:
         self.channel = channel
         self.user_confirmed = user_confirmed
         self.evidence = {"job_ids": [], "results": [], "failures": []}
+        # Guards the session counters and evidence lists when several helpers
+        # run in parallel - `calls += 1` is a read-modify-write, and a lost
+        # increment would silently widen the runaway guard.
+        self.lock = threading.Lock()
 
     def say(self, ev: dict) -> None:
         try:
@@ -225,12 +229,7 @@ class Agent:
                 return (resp.output_text or "").strip()
 
             round_failed = False
-            for fc in calls:
-                try:
-                    args = json.loads(fc.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                result = self._dispatch(getattr(fc, "name", ""), args, ctx, tools)
+            for fc, result in self._execute(calls, ctx, tools):
                 if not result.get("ok"):
                     round_failed = True
                 convo.append({
@@ -245,18 +244,54 @@ class Agent:
                     effort = "high"
         return "I ran as far as I usefully could on that and should hand it back."
 
+    def _execute(self, calls, ctx: Ctx, tools: dict) -> list:
+        """Run this round's tool calls, in parallel when they are independent.
+
+        Only DISTINCT specialist calls parallelise - each specialist is its own
+        isolated loop on its own resource (desktop UI, files MCP, the browser on
+        9222, WhatsApp on 9223), so "check my CPU and count my files" runs both
+        at once instead of one after the other. Anything else - run_python, the
+        same specialist twice, plan/memory - stays serial and in order, because
+        order can matter there (a read after a click must see the click)."""
+        parsed = []
+        for fc in calls:
+            try:
+                args = json.loads(fc.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            parsed.append((fc, args))
+
+        names = [getattr(fc, "name", "") for fc, _ in parsed]
+        agent_calls = all(tools.get(n) is not None and tools[n].kind == "agent"
+                          for n in names)
+        distinct = len(set(names)) == len(names)
+
+        if len(parsed) > 1 and agent_calls and distinct:
+            from concurrent.futures import ThreadPoolExecutor
+            ctx.say({"type": "parallel", "calls": len(parsed),
+                     "tools": names})
+            with ThreadPoolExecutor(max_workers=min(4, len(parsed))) as ex:
+                futs = [ex.submit(self._dispatch, getattr(fc, "name", ""),
+                                  args, ctx, tools) for fc, args in parsed]
+                results = [f.result() for f in futs]
+            return list(zip([fc for fc, _ in parsed], results))
+
+        return [(fc, self._dispatch(getattr(fc, "name", ""), args, ctx, tools))
+                for fc, args in parsed]
+
     def _dispatch(self, name: str, args: dict, ctx: Ctx, tools: dict) -> dict:
         tool = tools.get(name)
         if tool is None:
             return {"ok": False, "error": f"no tool named {name!r}"}
 
         sig = f"{name}:{json.dumps(args, sort_keys=True, default=str)[:160]}"
-        try:
-            safety.check(name, ctx.session, sig)      # repeat + runaway guard
-        except Blocked as b:
-            return {"ok": False, "status": "blocked", "error": b.reason}
-        ctx.session.calls += 1
-        ctx.session.note(sig)
+        with ctx.lock:
+            try:
+                safety.check(name, ctx.session, sig)   # repeat + runaway guard
+            except Blocked as b:
+                return {"ok": False, "status": "blocked", "error": b.reason}
+            ctx.session.calls += 1
+            ctx.session.note(sig)
 
         held = guard(tool, args, ctx)
         ctx.say({"type": "tool", "name": name,
@@ -562,6 +597,7 @@ ROUTING - this is where turns go wrong, so get it right:
 - Do NOT split one action across specialists, and never hand the same job to two of them.
 - When a specialist reports it DID the job, the job is DONE - speak its result and stop. Do not re-do it with another specialist or with run_python to "double-check"; that is how a real success gets reported as a failure.
 - Reading what is on a web or chat app's screen (WhatsApp, Gmail, a website) is comms/browser work over the app's protocol - NEVER screenshots or OCR.
+- GO FAST: when parts of the task are INDEPENDENT (e.g. check the CPU and count files, or research one thing while reading another), call those specialists in the SAME step - they run at the same time instead of one after another.
 
 """ + _HONESTY + """
 
