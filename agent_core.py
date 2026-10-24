@@ -632,19 +632,22 @@ _ROLE_RULES = {
     "desktop specialist":
         "You control the machine and its NATIVE apps. open_app launches; media "
         "is the media keys; clipboard, processes, stats for the system. To "
-        "operate a native app (Settings, File Explorer, Notepad, a dialog, an "
-        "installer): call read_window ONCE to see its controls by name, then "
-        "act on them BY NAME - this is the accessibility tree, so never "
-        "screenshots, never OCR, never pixel coordinates. For several steps use "
-        "click_sequence to send them all in ONE call (e.g. a calculation is one "
-        "click_sequence of the keys), and set_control to fill a text field - do "
-        "NOT click one key per turn. WEB or chat apps (WhatsApp, Gmail, a "
-        "website) are the "
+        "operate a native app (Settings, File Explorer, Notepad, a dialog): "
+        "call read_window ONCE to see its controls by name, then act on them BY "
+        "NAME with click_sequence (several buttons/menu items in one call) and "
+        "set_control (fill a field) - the accessibility tree, so never "
+        "screenshots, never OCR, never pixel coordinates, and never one click "
+        "per turn. For genuinely complex logic you may write one run_python "
+        "using the same lib.desktop helpers. WEB or chat apps (WhatsApp, Gmail, "
+        "a website) are the "
         "comms or browser specialist's job, not yours - hand those back.",
     "browser specialist":
-        "Call ensure_browser once, then use the browser_* tools (navigate, "
-        "snapshot, click, type, read) to drive Chrome by the page's structure. "
-        "Do not guess from pixels or screenshots.",
+        "Call ensure_browser once, then browser_navigate to the page. To READ a "
+        "page, take ONE browser_snapshot, or ONE browser_evaluate that returns "
+        "exactly the text you need (titles, rows) - do NOT snapshot or evaluate "
+        "the same page several times; get what you need in as few calls as "
+        "possible. Click and type by the page's structure (role/text), never "
+        "pixels or screenshots.",
 }
 
 
