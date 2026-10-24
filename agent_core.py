@@ -40,6 +40,7 @@ import threading
 from openai import OpenAI
 
 import brain
+import fastpath
 import mcp_client
 import mcp_config
 import memory
@@ -782,6 +783,24 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     emit = emit or (lambda ev: None)
     channel = channel or f"chan:{transport.value}"
     brain._remember_turn(channel, "in", text)
+
+    # THE FAST PATH - the single biggest "within seconds" win. "open chrome",
+    # "what's my cpu", "pause", "what time is it" are unmistakable: they need
+    # DOING, not planning. Deterministic code answers them in milliseconds with
+    # no model call at all. Anything ambiguous, multi-step, or that sends/
+    # deletes/spends falls through to the orchestrator (fastpath is read-only or
+    # trivially reversible by design).
+    quick = fastpath.try_run(text)
+    if quick is not None:
+        say = quick.get("say", "Done.")
+        emit({"type": "tool", "name": "fastpath", "code": "",
+              "why": text[:60]})
+        emit({"type": "tool_result", "name": "fastpath", "ok": True,
+              "detail": say[:150]})
+        emit({"type": "reply", "text": say})
+        brain._remember_turn(channel, "out", say)
+        memory.capture_turn(text, say, source=transport.value)
+        return say
 
     # The daily cap. Past it, work that costs tokens stops; read-only status
     # still answers, so the kill switch never also blinds him (AGENTS.md 9).
