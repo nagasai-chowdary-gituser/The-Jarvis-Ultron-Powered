@@ -392,6 +392,19 @@ def _ask_boss(args, ctx) -> dict:
             "note": "Ask this and stop; his answer is the next turn."}
 
 
+def _plan(args, ctx) -> dict:
+    """Announce the plan before acting: the task, the helpers, the steps.
+
+    Shows up on the HUD and in the desk chat so the Boss sees what Jarvis
+    decided to do and with what, before it happens."""
+    task = (args.get("task", "") or "").strip()
+    helpers = [str(h) for h in (args.get("helpers") or [])][:6]
+    steps = [str(s) for s in (args.get("steps") or [])][:8]
+    ctx.say({"type": "plan", "task": task, "helpers": helpers, "steps": steps})
+    return {"ok": True, "note": "Plan shown. Now carry it out step by step, "
+                                "immediately, without pausing to check in."}
+
+
 RUN_PYTHON = _t("run_python",
     "Run Python in a fresh 60s subprocess (lib/ importable, workspace as cwd). "
     "The universal fallback for anything no other tool covers. Print what you "
@@ -458,6 +471,17 @@ ASK_BOSS = _t("ask_boss",
      "options": {"type": "array", "items": {"type": "string"}}},
     ["question"], _ask_boss)
 
+PLAN = _t("plan",
+    "Announce your plan BEFORE acting, for any real task. Say the task in a few "
+    "words, which helpers you will use (comms, browser, desktop, files, "
+    "research, coder, run_python, or an MCP tool), and the short steps. Then "
+    "immediately carry it out. Skip this only for a greeting or a one-line "
+    "answer you can give directly.",
+    {"task": {"type": "string"},
+     "helpers": {"type": "array", "items": {"type": "string"}},
+     "steps": {"type": "array", "items": {"type": "string"}}},
+    ["task"], _plan)
+
 OPEN_APP = _t("open_app", "Launch an app by name.",
     {"name": {"type": "string"}}, ["name"],
     _desktop(lambda d, a: d.open_app(a.get("name", ""))))
@@ -484,6 +508,9 @@ _HONESTY = """WHAT COUNTS AS TRUE
 Say what a tool RETURNED, never what you intended. A message is sent when the send returned an id; a file exists when the write returned its size. If a tool failed, say it failed and why. If you did not read something, you do not know it. Never say you are monitoring or watching unless schedule_job returned an id THIS turn. The database word "pending" means a job is ACTIVE and queued, not broken - do not tell the Boss an active job is dead."""
 
 ORCH_PROMPT = _IDENTITY + """
+
+PLAN FIRST, THEN MOVE FAST
+For any real task, your VERY FIRST call is plan(task, helpers, steps): name the task in a few words, the helpers/MCP you will use, and the short steps - this takes a second and the Boss sees it. Then carry it out immediately, step by step, with no pausing to check in and no second-guessing. For a greeting or a one-line answer you already know, skip the plan and just answer.
 
 HOW YOU WORK
 You lead a small team of specialists and you decide who does what. Hand a job to a specialist by calling it with one clear sentence:
@@ -626,7 +653,7 @@ def build_team(force: bool = False) -> Agent:
 
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
-    orch_tools += [RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB, ASK_BOSS,
+    orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB, ASK_BOSS,
                    MESSAGE_BOSS]
 
     team = Agent("jarvis", models.BRAIN_HEAVY, "medium",

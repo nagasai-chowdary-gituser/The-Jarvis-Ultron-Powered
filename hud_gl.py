@@ -1210,6 +1210,22 @@ def _apply(s: HudState, ev: dict) -> None:
     elif kind == "route":
         s.model = str(ev.get("model", ""))
 
+    elif kind == "plan":
+        # The plan Jarvis made before acting: task, helpers, steps. Shown in
+        # the chat so the Boss sees what it decided and with what.
+        task = str(ev.get("task", "")).strip()
+        helpers = [str(h) for h in (ev.get("helpers") or [])]
+        steps = [str(x) for x in (ev.get("steps") or [])]
+        line = "PLAN: " + task
+        if helpers:
+            line += "  -  using " + ", ".join(helpers)
+        for i, st in enumerate(steps):
+            line += f"\n  {i + 1}. {st}"
+        s.chat_log.append(("jarvis", line))
+        del s.chat_log[:-200]
+        s.state = "thinking"
+        s.task = ("plan: " + task)[:90]
+
     elif kind in ("tool", "tool_call"):
         s.state = "acting"
         s.tool = tool
