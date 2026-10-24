@@ -572,16 +572,16 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
 
     emit({"type": "route", "model": team.model, "effort": team.effort})
 
-    # History first, so "yes, proceed" knows what it is proceeding with.
+    # History first, so "yes, proceed" knows what it is proceeding with. The
+    # fresh state (date, facts, this contact) is appended for THIS turn and
+    # passed in, never written onto the shared cached orchestrator - two
+    # overlapping turns (a call and a Telegram line at once) would otherwise
+    # race on its instructions field.
     history = brain._recent_turns(channel)
-    base = team.instructions
-    team.instructions = base + state.facts_block() + (
+    instructions = team.instructions + state.facts_block() + (
         state.as_context(jid) if jid else "")
-    try:
-        convo = history + [{"role": "user", "content": text}]
-        reply = _run_with_history(team, convo, ctx)
-    finally:
-        team.instructions = base          # keep the cached prefix stable
+    convo = history + [{"role": "user", "content": text}]
+    reply = _run_with_history(team, convo, ctx, instructions)
 
     reply = brain.vet(reply, ctx.evidence) or "[guess] Done."
     emit({"type": "reply", "text": reply})
@@ -634,8 +634,9 @@ def voice_dispatcher(transport: Transport, emit):
     return dispatch
 
 
-def _run_with_history(agent: Agent, convo: list[dict], ctx: Ctx) -> str:
-    """Agent.run, but seeded with prior turns instead of a single task line."""
+def _run_with_history(agent: Agent, convo: list[dict], ctx: Ctx,
+                      instructions: str) -> str:
+    """Agent.run, but seeded with prior turns and this turn's instructions."""
     client = _client()
     effort = agent.effort
     failures = 0
@@ -644,7 +645,7 @@ def _run_with_history(agent: Agent, convo: list[dict], ctx: Ctx) -> str:
             return "I hit my runaway ceiling - that is a loop on my side."
         try:
             resp = client.responses.create(
-                model=agent.model, instructions=agent.instructions,
+                model=agent.model, instructions=instructions,
                 input=convo, tools=agent.specs,
                 reasoning={"effort": effort},
                 max_output_tokens=models.MAX_OUTPUT_TOKENS, store=False)
