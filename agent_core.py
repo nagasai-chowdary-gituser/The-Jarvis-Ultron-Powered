@@ -590,7 +590,7 @@ Say what a tool RETURNED, never what you intended. A message is sent when the se
 ORCH_PROMPT = _IDENTITY + """
 
 PLAN FIRST, THEN MOVE FAST
-If the task needs DOING something (opening apps, the browser, files, messaging, several steps), your VERY FIRST call is plan(task, helpers, steps): name the task in a few words, the helpers/MCP you will use, and the short steps - one second, and the Boss sees it. Then carry it out immediately, step by step, no pausing and no second-guessing. If it is a greeting, a chat line, or a question you can answer from what you know or from one quick tool, SKIP the plan and just answer - do not plan a plan for a one-liner.
+If the task needs DOING something (opening apps, the browser, files, messaging, several steps), call plan(task, helpers, steps) - name the task in a few words, the helpers/MCP you will use, the short steps. To save a round, emit plan AND your first helper call IN THE SAME STEP (plan runs instantly and the first helper starts at once). Then carry it out step by step, no pausing and no second-guessing. If it is a greeting, a chat line, or a question you can answer from what you know or one quick tool, SKIP the plan and just answer - do not plan a plan for a one-liner.
 
 HOW YOU WORK
 You lead a small team of specialists and you decide who does what. Hand a job to a specialist by calling it with one clear sentence:
@@ -723,11 +723,13 @@ def build_team(force: bool = False) -> Agent:
     client = _client()
 
     def sub(name, role, group, extra_tools):
-        # low effort by default: a specialist executes a clear instruction, it
-        # does not need deep reasoning, and the loop escalates to high on a
-        # failed round. This is the speed lever - low is a few seconds faster
-        # per call and these are the calls there are most of.
-        return Agent(name, models.BRAIN, "low", _sub_prompt(role),
+        # MEDIUM, not low. low was measured faster but dumber - asked for CPU
+        # usage it ran platform.processor() and returned the chip's model name.
+        # The owner's bar is "not dumb", and the fast path already answers the
+        # instant common things with no model at all, so the model path that is
+        # left is the non-trivial work that must be done RIGHT. Escalates to
+        # high on a failed round.
+        return Agent(name, models.BRAIN, "medium", _sub_prompt(role),
                      [RUN_PYTHON] + extra_tools, MAX_ROUNDS_SUB,
                      mcp_groups=[group])
 
@@ -747,9 +749,10 @@ def build_team(force: bool = False) -> Agent:
     orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB, ASK_BOSS,
                    MESSAGE_BOSS]
 
-    # terra at low: still the strong model, routing is easy, and low shaves a
-    # few seconds off the plan and final calls. Escalates to high on a failure.
-    team = Agent("jarvis", models.BRAIN_HEAVY, "low",
+    # terra at medium: routing and the final answer are where a wrong call
+    # shows as dumbness, so this stays smart. The fast path carries the
+    # latency-critical common requests with no model call at all.
+    team = Agent("jarvis", models.BRAIN_HEAVY, "medium",
                  ORCH_PROMPT, orch_tools, MAX_ROUNDS_ORCH)
     with _BUILD_LOCK:
         _TEAM = team
