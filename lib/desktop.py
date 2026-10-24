@@ -429,3 +429,35 @@ def set_control(title: str, control: str, text: str) -> dict:
         return {"ok": True, "set": control, "value": text[:60]}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def click_sequence(title: str, controls: list, delay: float = 0.12) -> dict:
+    """Click several named controls in order, in ONE call.
+
+    This is what keeps UI tasks fast. Clicking eight Calculator keys as eight
+    separate tool calls means eight model round-trips; here the model reads the
+    control names once and sends them all at once. Stops and reports honestly at
+    the first control it cannot find, so a half-done sequence is never hidden."""
+    win = _find_window(title)
+    if win is None:
+        return {"ok": False, "error": f"no open window matches {title!r}"}
+    import time as _t
+    done = []
+    for name in (controls or []):
+        target = _find_control(win, name)
+        if target is None:
+            return {"ok": False, "clicked": done,
+                    "error": f"no control named {name!r} - clicked {done} first",
+                    "hint": "call read_window to see the real control names"}
+        try:
+            try:
+                target.GetInvokePattern().Invoke()
+            except Exception:
+                win.SetActive()
+                target.Click(simulateMove=False)
+            done.append(name)
+            _t.sleep(delay)
+        except Exception as e:
+            return {"ok": False, "clicked": done,
+                    "error": f"{name}: {type(e).__name__}: {e}"}
+    return {"ok": True, "clicked": done}

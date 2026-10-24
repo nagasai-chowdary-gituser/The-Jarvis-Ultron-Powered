@@ -49,7 +49,7 @@ import state
 from safety import Blocked, Session, Transport
 
 MAX_ROUNDS_ORCH = 24
-MAX_ROUNDS_SUB = 12
+MAX_ROUNDS_SUB = 18          # enough for a multi-step UI task without the boss retrying
 TOOL_OUTPUT_LIMIT = 2000
 
 
@@ -561,6 +561,15 @@ CLICK_CONTROL = _t("click_control",
     {"title": {"type": "string"}, "control": {"type": "string"}},
     ["title", "control"], _desk_call("click_control"))
 
+CLICK_SEQUENCE = _t("click_sequence",
+    "Click SEVERAL named controls in order in ONE call - the fast way to do a "
+    "multi-step UI action. e.g. click_sequence('Calculator', ['One','Two',"
+    "'Three','Plus','Four','Equals']). Read the names once with read_window, "
+    "then send them all here instead of one click per step.",
+    {"title": {"type": "string"},
+     "controls": {"type": "array", "items": {"type": "string"}}},
+    ["title", "controls"], _desk_call("click_sequence"))
+
 SET_CONTROL = _t("set_control",
     "Type text into a named field of a native app (sets the value directly).",
     {"title": {"type": "string"}, "control": {"type": "string"},
@@ -623,10 +632,13 @@ _ROLE_RULES = {
         "You control the machine and its NATIVE apps. open_app launches; media "
         "is the media keys; clipboard, processes, stats for the system. To "
         "operate a native app (Settings, File Explorer, Notepad, a dialog, an "
-        "installer): call read_window to SEE its controls by name, then "
-        "click_control and set_control to act on them BY NAME - this is the "
-        "accessibility tree, so never screenshots, never OCR, never pixel "
-        "coordinates. WEB or chat apps (WhatsApp, Gmail, a website) are the "
+        "installer): call read_window ONCE to see its controls by name, then "
+        "act on them BY NAME - this is the accessibility tree, so never "
+        "screenshots, never OCR, never pixel coordinates. For several steps use "
+        "click_sequence to send them all in ONE call (e.g. a calculation is one "
+        "click_sequence of the keys), and set_control to fill a text field - do "
+        "NOT click one key per turn. WEB or chat apps (WhatsApp, Gmail, a "
+        "website) are the "
         "comms or browser specialist's job, not yours - hand those back.",
     "browser specialist":
         "Call ensure_browser once, then use the browser_* tools (navigate, "
@@ -718,7 +730,7 @@ def build_team(force: bool = False) -> Agent:
     browser = sub("browser", "browser specialist", "browser", [ENSURE_BROWSER])
     desktop = sub("desktop", "desktop specialist", "desktop",
                   [OPEN_APP, MEDIA, PROCESSES, STATS, LIST_WINDOWS,
-                   READ_WINDOW, CLICK_CONTROL, SET_CONTROL])
+                   READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE, SET_CONTROL])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH])
     comms = sub("comms", "communications specialist", "comms",
