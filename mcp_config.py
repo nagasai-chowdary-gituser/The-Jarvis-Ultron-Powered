@@ -104,9 +104,12 @@ def server_specs() -> list[dict]:
 # owner's "ask before messaging people, installing software, or killing apps".
 _REFUSE_NAME = ("delete", "remove", "rmdir", "unlink", "destroy", "erase",
                 "permanently")
+# Messaging is NOT here: when the owner asks Jarvis to message someone, it sends
+# without asking (his rule). The dangerous messaging case, "message everyone",
+# is caught as external_broadcast / PIN, not here.
 _CONFIRM_NAME = ("kill", "terminate", "end_process", "stop_process",
-                 "install", "uninstall", "send_email", "send_message",
-                 "send_mail", "create_issue", "create_pull_request", "push")
+                 "install", "uninstall", "create_issue",
+                 "create_pull_request", "push")
 
 # Argument text that means deletion or money no matter which tool carries it -
 # the realistic route is a desktop server running a shell string.

@@ -110,8 +110,13 @@ class Ctx:
 # The safety gate every tool call passes through, whatever its kind.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_CONFIRM_FUNCS = {"message_boss", "whatsapp_send", "install_package",
-                  "kill_process"}
+# MESSAGING IS NOT HERE, DELIBERATELY. The owner's rule: do not message people
+# on your own, but when he TELLS you to message someone, just do it - asking is
+# exactly the friction he does not want, and the desk chat has no way to answer
+# a confirmation anyway, so it looped forever. Every message Jarvis sends traces
+# to a request he made or a job he scheduled, so it is never truly autonomous;
+# the one dangerous case, "message everyone", stays PIN-gated as external_broadcast.
+_CONFIRM_FUNCS: set[str] = {"install_package", "kill_process"}
 
 
 def guard(tool: Tool, args: dict, ctx: Ctx) -> dict | None:
@@ -419,8 +424,8 @@ MESSAGE_BOSS = _t("message_boss", "Send the Boss a Telegram message.",
     {"text": {"type": "string"}}, ["text"], _message_boss)
 
 WHATSAPP_SEND = _t("whatsapp_send",
-    "Send a WhatsApp message to a contact from the Boss's own account. Asks "
-    "him first unless already confirmed.",
+    "Send a WhatsApp message to a contact from the Boss's own account. When he "
+    "has asked you to message someone, send it - do not ask again.",
     {"contact": {"type": "string"}, "text": {"type": "string"}},
     ["contact", "text"], _whatsapp_send)
 
@@ -469,7 +474,7 @@ You lead a small team of specialists and you decide who does what. Hand a job to
   browser  - drive Chrome: open pages, read them, click, fill, check what is on screen (call ensure_browser first)
   desktop  - open apps, media keys, read/clipboard, running processes, Windows control
   research - search the web and read pages
-  comms    - WhatsApp and Telegram messages (every send is confirmed with the Boss first)
+  comms    - WhatsApp and Telegram messages. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
   coder    - read/write code and work with GitHub
 For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot.
 

@@ -109,16 +109,24 @@ def test_run_python_deletion_is_refused_by_the_gate(db):
     assert held and held.get("status") == "refused"
 
 
-def test_message_boss_is_held_without_a_session(db):
-    held = agent_core.guard(agent_core.MESSAGE_BOSS, {"text": "hi"},
-                            _ctx(Transport.TELEGRAM))
-    assert held and held.get("status") == "needs_confirmation"
+def test_messaging_sends_without_confirmation(db):
+    """The owner's rule: when he asks Jarvis to message someone, just send it -
+    do not ask. The confirm loop on the desk chat had no way to answer, so a
+    message could never be sent."""
+    assert agent_core.guard(agent_core.MESSAGE_BOSS, {"text": "hi"},
+                            _ctx(Transport.TELEGRAM)) is None
+    assert agent_core.guard(agent_core.WHATSAPP_SEND,
+                            {"contact": "Kapcut", "text": "hi"},
+                            _ctx(Transport.DESK)) is None
 
 
-def test_message_boss_proceeds_when_confirmed(db):
-    held = agent_core.guard(agent_core.MESSAGE_BOSS, {"text": "hi"},
-                            _ctx(Transport.TELEGRAM, confirmed=True))
-    assert held is None
+def test_mass_broadcast_still_needs_the_pin(db):
+    """Messaging one person is free; messaging EVERYONE is the dangerous case
+    and stays PIN-gated as a high-risk action, not a per-send prompt."""
+    import safety
+    assert safety.risk_of("message everyone in my contacts") == "external_broadcast"
+    with pytest.raises(Blocked):
+        safety.authorize("external_broadcast")
 
 
 def test_ordinary_run_python_is_not_held(db):

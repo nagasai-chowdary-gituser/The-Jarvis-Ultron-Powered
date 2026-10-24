@@ -24,9 +24,13 @@ with the best OpenAI model, MCP, and sub-agents. What runs now:
   absent — the agent degrades to `run_python`, never crashes.
 - **One safety gate on every call** (`agent_core.guard`): deletion refused
   (AST preflight `safety.refuse_destructive_code`, 8 routes, also now wired
-  into the legacy `run_python` where it had been dropped), money refused, and
-  messaging / installing / killing **confirmed first**. The 5 high-risk actions
-  still need the PIN; the daily cap is **$2** and read-only survives it.
+  into the legacy `run_python` where it had been dropped) and money refused.
+  **Messaging someone the owner asked you to message sends immediately — no
+  confirmation** (his rule, 2026-10-24: asking is the friction he does not
+  want, and the desk chat had no way to answer a prompt so it looped). Only
+  *mass* messaging ("message everyone") is gated, as the `external_broadcast`
+  high-risk action. The 5 high-risk actions still need the PIN; the daily cap
+  is **$2** and read-only survives it.
 - **All transports share the orchestrator and one memory thread.** Text doors
   call `agent_core.run_turn`; voice (phone + desk mic) hands the whole request
   to it via a single `handle_request` tool, so speech gets the same brain.
