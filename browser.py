@@ -242,6 +242,34 @@ def seed_profile(force: bool = False) -> dict:
             "profile": PROFILE_DIR}
 
 
+def _kill_profile_chrome() -> int:
+    """Kill any Chrome running on JARVIS'S profile - never the owner's.
+
+    Matched by the profile path in the command line, so the owner's Chrome,
+    which runs on the default User Data dir, is never a candidate. Only called
+    when the debug port is already known to be closed, so anything matched is a
+    port-less instance that would otherwise block a fresh launch."""
+    killed = 0
+    try:
+        import psutil
+        target = PROFILE_DIR.lower()
+        for p in psutil.process_iter(["name", "cmdline"]):
+            if (p.info.get("name") or "").lower() != "chrome.exe":
+                continue
+            cmd = " ".join(p.info.get("cmdline") or []).lower()
+            if target in cmd:
+                try:
+                    p.kill()
+                    killed += 1
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    if killed:
+        time.sleep(1.0)          # let the lock clear before relaunching
+    return killed
+
+
 def start_chrome_with_debugging(restart: bool = False) -> dict:
     """Open Jarvis's own Chrome, with the debugging port live.
 
@@ -260,6 +288,15 @@ def start_chrome_with_debugging(restart: bool = False) -> dict:
     if debug_port_open():
         return {"ok": True, "port": DEBUG_PORT, "already": True,
                 "spoken": "Browser control is already on."}
+
+    # A PREVIOUS LAUNCH THAT DIED can leave a Jarvis Chrome running on this
+    # profile WITHOUT a debug port. It then holds the profile's SingletonLock,
+    # so the next launch just HANDS OFF to it and never opens a port either -
+    # which is exactly the "debug port never opened" failure, verified live on
+    # the owner's machine. The port is not open (checked above), so any Jarvis
+    # Chrome still running is port-less and useless: clear it before launching.
+    # Matched by the profile path, so the owner's own Chrome is never touched.
+    _kill_profile_chrome()
 
     seeded = seed_profile()
     try:
