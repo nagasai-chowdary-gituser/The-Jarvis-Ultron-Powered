@@ -207,9 +207,16 @@ WAITING_WORDS = re.compile(
     r"look(?:ing)?\s+out|let\s+you\s+know)\b"
     r"|\b(?:in\s+the\s+background|until\s+(?:he|she|they)\s+says?)\b", re.I)
 
+# A FIRST-PERSON CLAIM to have done an action, not just any sentence mentioning
+# one. The old pattern matched the bare words, so a plain answer like "I don't
+# have your name saved" tripped on "saved" and got rewritten to "That did NOT
+# happen" - the model was not claiming to have saved anything. It must be "I
+# sent", "I've created", "I just opened": an action in the first person.
 DONE_WORDS = re.compile(
-    r"\b(sent|delivered|messaged|texted|called|created|wrote|saved|opened|"
-    r"done|completed)\b", re.I)
+    r"\bi(?:'ve| have| will|'ll| already| just)*\s+(?:just\s+)?"
+    r"(sent|delivered|messaged|texted|emailed|called|created|wrote|written|"
+    r"saved|opened|installed|deleted|moved|downloaded|completed|finished)\b",
+    re.I)
 
 SOURCE_TAGS = ("[whatsapp]", "[state]", "[guess]", "[telegram]", "[phone]",
                "[desk]", "[web]", "[file]")

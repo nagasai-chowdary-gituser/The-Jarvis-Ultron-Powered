@@ -589,7 +589,7 @@ Say what a tool RETURNED, never what you intended. A message is sent when the se
 ORCH_PROMPT = _IDENTITY + """
 
 PLAN FIRST, THEN MOVE FAST
-For any real task, your VERY FIRST call is plan(task, helpers, steps): name the task in a few words, the helpers/MCP you will use, and the short steps - this takes a second and the Boss sees it. Then carry it out immediately, step by step, with no pausing to check in and no second-guessing. For a greeting or a one-line answer you already know, skip the plan and just answer.
+If the task needs DOING something (opening apps, the browser, files, messaging, several steps), your VERY FIRST call is plan(task, helpers, steps): name the task in a few words, the helpers/MCP you will use, and the short steps - one second, and the Boss sees it. Then carry it out immediately, step by step, no pausing and no second-guessing. If it is a greeting, a chat line, or a question you can answer from what you know or from one quick tool, SKIP the plan and just answer - do not plan a plan for a one-liner.
 
 HOW YOU WORK
 You lead a small team of specialists and you decide who does what. Hand a job to a specialist by calling it with one clear sentence:
@@ -722,7 +722,11 @@ def build_team(force: bool = False) -> Agent:
     client = _client()
 
     def sub(name, role, group, extra_tools):
-        return Agent(name, models.BRAIN, "medium", _sub_prompt(role),
+        # low effort by default: a specialist executes a clear instruction, it
+        # does not need deep reasoning, and the loop escalates to high on a
+        # failed round. This is the speed lever - low is a few seconds faster
+        # per call and these are the calls there are most of.
+        return Agent(name, models.BRAIN, "low", _sub_prompt(role),
                      [RUN_PYTHON] + extra_tools, MAX_ROUNDS_SUB,
                      mcp_groups=[group])
 
@@ -742,7 +746,9 @@ def build_team(force: bool = False) -> Agent:
     orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB, ASK_BOSS,
                    MESSAGE_BOSS]
 
-    team = Agent("jarvis", models.BRAIN_HEAVY, "medium",
+    # terra at low: still the strong model, routing is easy, and low shaves a
+    # few seconds off the plan and final calls. Escalates to high on a failure.
+    team = Agent("jarvis", models.BRAIN_HEAVY, "low",
                  ORCH_PROMPT, orch_tools, MAX_ROUNDS_ORCH)
     with _BUILD_LOCK:
         _TEAM = team
@@ -756,6 +762,18 @@ def mcp_report() -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # The entry the doors call — one message in, one reply out.
 # ─────────────────────────────────────────────────────────────────────────────
+
+import re as _re
+
+_SOURCE_TAG = _re.compile(
+    r"^\s*\[(?:state|guess|whatsapp|telegram|phone|desk|web|file|job #\d+)\]\s*",
+    _re.I)
+
+
+def _strip_source_tag(text: str) -> str:
+    cleaned = _SOURCE_TAG.sub("", text or "").strip()
+    return cleaned or (text or "").strip()
+
 
 def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
              channel: str = "", user_confirmed: bool = False) -> str:
@@ -812,7 +830,12 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     reply = team.run(text, ctx, _client(), history=history,
                      instructions=instructions)
 
-    reply = brain.vet(reply, ctx.evidence) or "[guess] Done."
+    reply = brain.vet(reply, ctx.evidence) or "Done."
+    # vet tags the source ([state]/[guess]) for its own honesty checks; strip
+    # that prefix from what the Boss actually sees - a final-boss assistant
+    # answers cleanly, it does not prepend "[guess]" to every line. The honesty
+    # is already structural (a false claim was caught above, not hidden here).
+    reply = _strip_source_tag(reply)
     emit({"type": "reply", "text": reply})
     brain._remember_turn(channel, "out", reply)
     # Learn from the exchange, off the critical path (embeds + stores in a
