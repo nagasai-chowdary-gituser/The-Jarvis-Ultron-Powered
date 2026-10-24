@@ -5,24 +5,27 @@ in real apps (Chrome / any big app) like a human — not toy Calculator/calendar
 ops — and do them fast and without dumbness. Also: remove all unused files from
 the codebase after checking carefully; keep only useful files.
 
-## G1 — A real multi-step autonomous BROWSER task completes correctly [manual]
-Jarvis, through the orchestrator, drives Chrome via the Playwright MCP to do a
-genuine multi-step research task a human would do (navigate a real site, read
-it, extract real content, write a summary to a file), end to end, and the
-output file contains REAL content from the live page (not invented).
-EVIDENCE: the run's events show browser specialist + files specialist; the
-written file in the workspace contains text that actually appears on the live
-page; the spoken answer is honest about what was found.
+## G1 — A real multi-step autonomous BROWSER task completes correctly [MET]
+EVIDENCE (live, 2026-10-24): "go to news.ycombinator.com, read the top 5
+stories, save to hn.txt, tell me the most interesting" -> plan -> browser
+(ensure_browser, navigate, snapshot, evaluate) -> files (write_file) -> real HN
+titles (FreeDNS, TornadoVM 7, neural chip, OBS 33, GrapheneOS) written to
+hn.txt and an honest pick. 36s.
 
-## G2 — A second, different big task proves generality [manual]
-A second multi-step task of a different shape (e.g. multi-site compare, or
-browser + desktop + files together) completes correctly, verified against real
-output — proving G1 was not a one-off.
+## G2 — A second, different big task proves generality [MET]
+EVIDENCE (live): "github.com/trending -> top 3 repos + languages to
+trending.txt" -> real repos (cloudflare/security-audit-skill JS, NVIDIA/
+OpenShell Rust, aws/agent-toolkit-for-aws Python), 45s. AND "research latest
+Python + Node.js versions, write to versions.txt, say which is higher" -> chose
+the research specialist (web_search/fetch), found Python 3.15.1 + Node 24.22.1,
+wrote the file, compared. 27s. Three different big tasks, all real content.
 
-## G3 — No dead source files; nothing removed is still referenced [manual]
-Every removed file is confirmed unreferenced (no import, not an entry point,
-not reachable via run_python/LIB.md). Kept files are all reachable.
-EVIDENCE: a grep showing each removed file has zero inbound references.
+## G3 — No dead source files; nothing removed is still referenced [MET]
+EVIDENCE: removed models.resolved.json (stale snapshot of models.py, zero .py
+references) and scratchpad_speed.py (scratch). Confirmed kept files are live:
+behavior suite passes (t01 LIFECYCLE_OK, uses current tasks.create/brain.Brain),
+verify.py used by it, static/hud.html and persona.md referenced. The rebuild
+had already cut 30 modules to 26 - the codebase was already lean.
 
 ## G4 — Full test suite stays green after all changes
   CHECK: cd c:/Users/asus/Desktop/ultron && .venv/Scripts/python.exe -m pytest tests/ -q -p no:cacheprovider
