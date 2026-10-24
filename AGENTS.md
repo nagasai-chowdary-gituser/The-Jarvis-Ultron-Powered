@@ -4,6 +4,51 @@
 
 ---
 
+## 0. REBUILD (2026-10-24) — the current brain, `rebuild/agents-mcp`
+
+**This section is newer than everything below and wins where they disagree.**
+The owner asked for a genuinely autonomous agent — "the current one is dumb" —
+with the best OpenAI model, MCP, and sub-agents. What runs now:
+
+- **A terra orchestrator + luna specialists** (`agent_core.py`), on the OpenAI
+  **Responses API** (not the Agents SDK: `openai-agents` 0.24 needs Python 3.12
+  and this machine is pinned to 3.11; it also dragged websockets/starlette
+  upgrades that broke the phone and FastAPI). The boss (`gpt-5.6-terra`) plans
+  and routes; specialists (`gpt-5.6-luna`) — files, browser, desktop, research,
+  comms, coder — each run a short loop with only their own tools and report
+  back. A specialist is an Agent exposed to the boss **as a tool**.
+- **MCP over a hand-written stdio client** (`mcp_client.py`, `mcp_config.py`):
+  filesystem (workspace-jailed, no delete tool) and Playwright (Jarvis's own
+  Chrome on 9222) via `npx`; GitHub when `GITHUB_TOKEN` is set; Windows-desktop
+  when `windows-mcp`/`uvx` is present. A server that fails to start is simply
+  absent — the agent degrades to `run_python`, never crashes.
+- **One safety gate on every call** (`agent_core.guard`): deletion refused
+  (AST preflight `safety.refuse_destructive_code`, 8 routes, also now wired
+  into the legacy `run_python` where it had been dropped), money refused, and
+  messaging / installing / killing **confirmed first**. The 5 high-risk actions
+  still need the PIN; the daily cap is **$2** and read-only survives it.
+- **All transports share the orchestrator and one memory thread.** Text doors
+  call `agent_core.run_turn`; voice (phone + desk mic) hands the whole request
+  to it via a single `handle_request` tool, so speech gets the same brain.
+  `JARVIS_LEGACY_BRAIN=1` falls back to the old 4-tool `brain.py`.
+- **Background autonomy**: `schedule_job(kind="agent_task", params.request=…)`
+  runs a whole request through the orchestrator in `worker.py` after the turn
+  ends and reports back (Telegram, or a call if `urgency='call'`).
+- **UI untouched** (`hud_gl.py`, `static/hud.html`); the backend emits the
+  events they already read, and a new `watch_broadcaster` fills the LIVE WATCH
+  panel that was always empty.
+
+Tests: `tests/test_jarvis.py` + `tests/test_agent_core.py`, **222 passing**,
+offline. Proven live: orchestrator→files specialist→MCP filesystem write/read,
+and the same via a background `agent_task`. Not yet confirmed on the owner's
+machine (his side only, see memory): the browser specialist driving real
+Chrome, the phone, and the desk mic.
+
+Everything from §1 down is the prior design; it remains true except where this
+section revises it.
+
+---
+
 ## 1. Mission
 
 A **general** personal agent. Not a fixed menu — the user asks for anything and it figures out how. One brain, three transports, different permissions per transport.
