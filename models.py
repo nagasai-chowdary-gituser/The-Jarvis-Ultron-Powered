@@ -15,6 +15,7 @@ BRAIN = "gpt-5.6-luna"              # $0.20 / $0.02 cached / $1.20 per 1M
 BRAIN_HEAVY = "gpt-5.6-terra"       # $2.00 / $0.20 cached / $12.00 per 1M
 REALTIME = "gpt-realtime-mini"      # the phone and desk voice; 0.76s to first word
 VISION = "gpt-5.6-luna"
+EMBED = "text-embedding-3-small"    # intelligent memory: semantic recall (1536-dim)
 
 MAX_OUTPUT_TOKENS = 4000
 DAILY_CAP_USD = 5.0

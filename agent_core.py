@@ -42,6 +42,7 @@ from openai import OpenAI
 import brain
 import mcp_client
 import mcp_config
+import memory
 import models
 import safety
 import state
@@ -318,12 +319,22 @@ def _run_python(args, ctx) -> dict:
 
 
 def _remember(args, ctx) -> dict:
-    state.set_fact(args.get("key", ""), args.get("value", ""))
-    return {"ok": True, "remembered": args.get("key", "")}
+    key = (args.get("key", "") or "").strip()
+    val = (args.get("value", "") or "").strip()
+    text = f"{key}: {val}" if (key and val) else (val or key)
+    mid = memory.remember(text, kind="fact",
+                          source=ctx.session.transport.value, importance=2.0)
+    if key and val:
+        state.set_fact(key, val)          # also keep exact-key lookups working
+    return {"ok": True, "remembered": text[:90], "id": mid}
 
 
 def _recall(args, ctx) -> dict:
-    return brain.do_recall(args.get("topic", ""))
+    """Semantic memory first, then the structured state (contacts, jobs, ...)."""
+    topic = args.get("topic", "")
+    out = brain.do_recall(topic)
+    out["memories"] = [h["text"] for h in memory.recall(topic, k=8)]
+    return out
 
 
 def _web_search(args, ctx) -> dict:
@@ -389,13 +400,19 @@ RUN_PYTHON = _t("run_python",
      "why": {"type": "string", "description": "One line: what this is for."}},
     ["code", "why"], _run_python)
 
-REMEMBER = _t("remember", "Store a durable fact, e.g. remember('college','X').",
+REMEMBER = _t("remember",
+    "Store a durable fact about the Boss or his world so you know it next time "
+    "- a name, a preference, a decision, an account detail. It is saved with an "
+    "embedding and recalled by meaning later. You also learn facts "
+    "automatically, so only call this for something clearly worth keeping.",
     {"key": {"type": "string"}, "value": {"type": "string"}},
     ["key", "value"], _remember)
 
 RECALL = _t("recall",
-    "Read what is stored before answering about a person or past action, and "
-    "always before disagreeing with the Boss.",
+    "Search your memory by MEANING (not keywords) for what you know about a "
+    "person, preference, or past action - plus stored contacts, commitments "
+    "and jobs. Relevant memories are already injected each turn, but call this "
+    "to dig deeper, and always before disagreeing with the Boss.",
     {"topic": {"type": "string"}}, ["topic"], _recall)
 
 WEB_SEARCH = _t("web_search", "Search the web. Returns titles, urls, snippets.",
@@ -673,14 +690,21 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # overlapping turns (a call and a Telegram line at once) would otherwise
     # race on its instructions field.
     history = brain._recent_turns(channel)
-    instructions = team.instructions + state.facts_block() + (
-        state.as_context(jid) if jid else "")
+    # INTELLIGENT MEMORY: pull the memories that bear on THIS request (by
+    # meaning, not recency) into the prompt, so the brain answers from what it
+    # actually knows rather than only the last few lines.
+    instructions = (team.instructions + state.facts_block()
+                    + memory.recall_block(text)
+                    + (state.as_context(jid) if jid else ""))
     reply = team.run(text, ctx, _client(), history=history,
                      instructions=instructions)
 
     reply = brain.vet(reply, ctx.evidence) or "[guess] Done."
     emit({"type": "reply", "text": reply})
     brain._remember_turn(channel, "out", reply)
+    # Learn from the exchange, off the critical path (embeds + stores in a
+    # background thread; never delays the reply).
+    memory.capture_turn(text, reply, source=transport.value)
     return reply
 
 
