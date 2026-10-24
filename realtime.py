@@ -106,10 +106,21 @@ class RealtimeSession:
         output_format: dict | None = None,
         model: str | None = None,
         greeting: str = "",
+        tools: list[dict] | None = None,
+        dispatch=None,
+        owns_memory: bool = True,
     ):
         self.session = session
         self.instructions = instructions
         self.greeting = greeting
+        # Voice can be handed a different tool set and dispatcher than the
+        # default 4-tool brain - main.py passes the orchestrator's single
+        # handle_request tool so speech gets the full terra brain. owns_memory
+        # is False then, because run_turn already records the turn and a second
+        # write here would duplicate every spoken line.
+        self._tools_override = tools
+        self._dispatch_override = dispatch
+        self._owns_memory = owns_memory
         self.emit = emit or self._noop
         self.confirm = confirm or self._decline
         self.on_audio = on_audio or self._noop_audio
@@ -295,10 +306,13 @@ class RealtimeSession:
         return json.loads(await self.ws.recv())
 
     def _tools(self) -> list[dict]:
-        """Realtime tool shape is flat, like the Responses API."""
-        # THE SAME FOUR the text path uses. Realtime's shape is already
-        # flat, so they pass straight through.
-        return brain.TOOLS
+        """Realtime tool shape is flat, like the Responses API.
+
+        Defaults to the 4-tool brain; main.py overrides it with the
+        orchestrator's single handle_request tool so voice reaches the full
+        terra brain and its specialists."""
+        return self._tools_override if self._tools_override is not None \
+            else brain.TOOLS
 
     # ── input ────────────────────────────────────────────────────────────────
 
@@ -513,9 +527,12 @@ class RealtimeSession:
     def _dispatch(self, name: str, args: dict) -> dict:
         """Run one tool on a worker thread, through the shared gate.
 
-        A Brain is built per call rather than held, because it carries the
+        When a dispatcher is supplied (voice -> orchestrator), use it. Otherwise
+        a Brain is built per call rather than held, because it carries the
         turn's evidence and that must not leak between turns - evidence from an
         earlier turn is exactly how "I'm monitoring" gets said again."""
+        if self._dispatch_override is not None:
+            return self._dispatch_override(name, args)
         b = brain.Brain(self.session)
         return b.dispatch(name, args)
 
@@ -605,6 +622,13 @@ class RealtimeSession:
             return
         self._transcript.append(f"{who}: {text}")
         del self._transcript[:-self.TRANSCRIPT_LINES]
+
+        # When the orchestrator owns memory (voice -> run_turn), it already
+        # persists the request and reply; writing here too would double every
+        # spoken line in the one shared thread. The transcript above is kept
+        # regardless, for the end-of-call commitment sweep.
+        if not self._owns_memory:
+            return
 
         role_dir = "in" if who == "You" else "out"
         channel = self.session.transport.value

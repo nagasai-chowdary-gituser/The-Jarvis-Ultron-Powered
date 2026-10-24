@@ -211,11 +211,9 @@ Speak in a low, deep register with a steady, level delivery. Calm and grounded, 
 
 PHONE_PROMPT = """You are Jarvis, on a phone call with your owner. You are not ChatGPT or any other product; if asked, you are Jarvis.
 
-You can drive his computer from this call - run_python works here exactly as it does at the desk. Open things, read files, check what is actually happening, and do what he asks.
+You can drive his computer from this call. For anything that needs doing or looking up - opening apps, the browser, files, messages, code - hand it to handle_request, and say one short line first so the line is not silent while it works. Then say back exactly what it returns.
 
-Anything that waits is a job: say you have scheduled it and give the number. Never say you are monitoring something unless you just scheduled it.
-
-Say what tools returned, never what you intended. If something failed, say it failed. He cannot see a screen, so a confident wrong answer is worse here than anywhere.
+Say what it returned, never what you intended. If something failed, say it failed. He cannot see a screen, so a confident wrong answer is worse here than anywhere.
 
 Short sentences. No markdown. Numbers as a person would say them.""" + VOICE_STYLE
 
@@ -365,11 +363,16 @@ async def stream(ws: WebSocket) -> None:
             nonlocal rs, runner, ready
             try:
                 ctx = await asyncio.to_thread(state.facts_block)
+                legacy = os.environ.get("JARVIS_LEGACY_BRAIN") == "1"
                 rs = realtime.RealtimeSession(
                     session, instructions=PHONE_PROMPT + ctx,
                     emit=emit_ev, on_audio=to_twilio, greeting=greeting,
                     input_format=realtime.FORMAT_MULAW,
-                    output_format=realtime.FORMAT_MULAW)
+                    output_format=realtime.FORMAT_MULAW,
+                    tools=None if legacy else agent_core.VOICE_TOOLS,
+                    dispatch=None if legacy else agent_core.voice_dispatcher(
+                        Transport.PHONE, emit),
+                    owns_memory=legacy)
                 await rs.connect()
                 runner = asyncio.create_task(rs.run())
                 while buffered:
@@ -464,11 +467,9 @@ async def desk_console() -> None:
 
 DESK_PROMPT = """You are Jarvis, at your owner's desk. You are not ChatGPT or any other product; if asked, you are Jarvis.
 
-This is the one place you can run code. Use run_python for anything real - reading files, driving Chrome, checking what is actually there. Look before you answer.
+For anything that needs doing or looking up - reading files, driving Chrome, opening apps, messages, code - hand it to handle_request, and say one short line first so you are not silent while it works. Then say back exactly what it returns. Look before you answer.
 
-Anything that waits is a job: schedule it and say the number. Never say you are monitoring something unless you just scheduled it.
-
-Say what tools returned, never what you intended. If something failed, say it failed.
+Say what it returned, never what you intended. If something failed, say it failed.
 
 Short sentences. No markdown, this is spoken aloud.""" + VOICE_STYLE
 
@@ -503,9 +504,14 @@ async def desk_voice() -> None:
         emit(ev)
 
     ctx = await asyncio.to_thread(state.facts_block)
+    legacy = os.environ.get("JARVIS_LEGACY_BRAIN") == "1"
     rs = realtime.RealtimeSession(
         session, instructions=DESK_PROMPT + ctx, emit=emit_ev,
-        on_audio=to_speaker, greeting="")
+        on_audio=to_speaker, greeting="",
+        tools=None if legacy else agent_core.VOICE_TOOLS,
+        dispatch=None if legacy else agent_core.voice_dispatcher(
+            Transport.DESK, emit),
+        owns_memory=legacy)
     await rs.connect()
     runner = asyncio.create_task(rs.run())
 

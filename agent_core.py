@@ -585,6 +585,51 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     return reply
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice bridge — the phone and desk mic hand the WHOLE request to the terra
+# orchestrator, so speech gets the same specialists, memory and honesty as text.
+#
+# The realtime model is ears and mouth, not the brain: it decides only whether
+# a line is small talk it can answer itself, or a real request to hand over. One
+# tool, so its schema stays tiny and cheap on an open audio line.
+# ─────────────────────────────────────────────────────────────────────────────
+
+VOICE_TOOLS = [{
+    "type": "function",
+    "name": "handle_request",
+    "description": (
+        "Hand the Boss's request to Jarvis's full brain - the one that can "
+        "open apps, drive the browser, read files, message people and run "
+        "code. Use this for ANYTHING that needs doing or looking up; only skip "
+        "it for pure small talk. Before calling it, say one short line out loud "
+        "about what you are about to do, so the line is not silent while it "
+        "works. Speak back exactly what it returns."),
+    "parameters": {
+        "type": "object",
+        "properties": {"request": {
+            "type": "string",
+            "description": "The Boss's request, in his words."}},
+        "required": ["request"],
+    },
+}]
+
+
+def voice_dispatcher(transport: Transport, emit):
+    """A (name, args) -> dict callable for a realtime session.
+
+    handle_request runs the orchestrator through run_turn, which owns memory
+    and the daily cap - so the realtime session is told not to persist turns
+    itself (owns_memory=False), and there is one record of the conversation,
+    not two."""
+    def dispatch(name: str, args: dict) -> dict:
+        if name == "handle_request":
+            reply = run_turn(args.get("request", ""), transport, emit=emit,
+                             channel=f"chan:{transport.value}")
+            return {"ok": True, "spoken": reply}
+        return {"ok": False, "error": f"voice has no tool named {name!r}"}
+    return dispatch
+
+
 def _run_with_history(agent: Agent, convo: list[dict], ctx: Ctx) -> str:
     """Agent.run, but seeded with prior turns instead of a single task line."""
     client = _client()
