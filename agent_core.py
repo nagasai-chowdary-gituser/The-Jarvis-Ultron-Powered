@@ -790,6 +790,12 @@ def build_team(force: bool = False) -> Agent:
 
 
 def mcp_report() -> dict:
+    """Live MCP state, read from the manager so it reflects servers as they come
+    up (the cached _MCP_REPORT summary lags a hair behind a parallel start)."""
+    srvs = mcp_client.manager().servers
+    if srvs:
+        return {name: {"ok": s.alive, "tools": len(s.tools), "error": s.error}
+                for name, s in srvs.items()}
     return _MCP_REPORT
 
 

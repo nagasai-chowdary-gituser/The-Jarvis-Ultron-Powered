@@ -230,13 +230,22 @@ class MCPManager:
         self._lock = threading.Lock()
 
     def start(self, specs: list[dict]) -> dict:
-        """Start every spec. Returns a report; a failure is recorded, not raised.
+        """Start every spec IN PARALLEL. Returns a report; a failure is
+        recorded, not raised.
+
+        Parallel because the servers start at very different speeds - the
+        filesystem server is up in ~2s, the Playwright one can take a minute on
+        a cold run. Started sequentially, a fast server would wait behind a slow
+        one and nothing could be used until the slowest finished. Here each
+        starts on its own thread and REGISTERS AS SOON AS IT IS READY, so a
+        filesystem task runs in seconds even while Playwright is still coming up.
 
         A spec is {name, command, args, env?, cwd?}. Servers that fail to start
         are simply absent from the tool index - the agent sees fewer tools, not
         a crash."""
-        report = {}
-        for spec in specs:
+        report: dict = {}
+
+        def start_one(spec: dict) -> None:
             name = spec["name"]
             srv = MCPServer(name, spec["command"], spec.get("args") or [],
                             spec.get("env"), spec.get("cwd"))
@@ -246,8 +255,16 @@ class MCPManager:
                 if ok:
                     for t in srv.tools:
                         self._tool_owner.setdefault(t["name"], name)
-            report[name] = {"ok": ok, "tools": len(srv.tools),
-                            "error": srv.error}
+                report[name] = {"ok": ok, "tools": len(srv.tools),
+                                "error": srv.error}
+
+        threads = [threading.Thread(target=start_one, args=(s,), daemon=True,
+                                    name=f"mcp-start-{s['name']}")
+                   for s in specs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
         return report
 
     def tools_for(self, server_names: list[str]) -> list[dict]:
