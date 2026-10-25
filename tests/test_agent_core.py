@@ -187,6 +187,18 @@ def test_loop_refuses_a_deleting_run_python_without_running_it(db):
 
 # ── the daily cap ────────────────────────────────────────────────────────────
 
+def test_fast_path_does_not_spend_on_learning(db, monkeypatch):
+    """A fast-path turn answers a trivial, deterministic op - there is nothing
+    durable to learn, so the background capture call must not fire."""
+    monkeypatch.setattr(agent_core.fastpath, "try_run",
+                        lambda t: {"say": "Opened Chrome."})
+    calls = {"n": 0}
+    monkeypatch.setattr(agent_core.memory, "capture_turn",
+                        lambda *a, **k: calls.__setitem__("n", calls["n"] + 1))
+    out = agent_core.run_turn("open chrome", Transport.DESK)
+    assert out == "Opened Chrome." and calls["n"] == 0
+
+
 def test_daily_cap_stops_work(db, monkeypatch):
     monkeypatch.setenv("DAILY_CAP_USD", "1.00")
     monkeypatch.setattr(state, "spend_today", lambda *a, **k: 5.0)
@@ -230,6 +242,48 @@ def test_independent_specialists_run_in_parallel(db):
     assert order.index("y-start") < order.index("x-end")
 
 
+# ── cost: cacheable prompt, no behaviour change ───────────────────────────────
+
+class _RecClient(FakeClient):
+    def __init__(self, script):
+        super().__init__(script)
+        self.calls = []
+
+    def create(self, **k):
+        self.calls.append(k)
+        return super().create(**k)
+
+
+def test_memory_rides_in_input_so_the_prompt_stays_cacheable(db):
+    """Per-turn memory must NOT be glued onto the system prompt: the model sees
+    the same content (in the developer channel, in the input), but the
+    instructions + tools stay byte-identical across turns so they cache."""
+    agent = agent_core.Agent("t", "m", "low", "STATIC-SYSTEM-PROMPT", [], 3)
+
+    c1 = _RecClient([_Resp([], "a")])
+    agent.run("do a thing", _ctx(), c1, context="MEMORY_ALPHA")
+    c2 = _RecClient([_Resp([], "b")])
+    agent.run("do a thing", _ctx(), c2, context="MEMORY_BETA")
+
+    i1, i2 = c1.calls[0], c2.calls[0]
+    # the cacheable prefix is identical across two turns with different memory
+    assert i1["instructions"] == i2["instructions"] == "STATIC-SYSTEM-PROMPT"
+    assert "MEMORY_ALPHA" not in i1["instructions"]
+    # and the memory still reaches the model, in the input, as developer context
+    lead = i1["input"][0]
+    assert lead["role"] == "developer" and lead["content"] == "MEMORY_ALPHA"
+    assert "MEMORY_BETA" in json.dumps(i2["input"])
+
+
+def test_no_context_leaves_the_input_unchanged(db):
+    """A specialist (no context) must behave exactly as before: just the task."""
+    agent = agent_core.Agent("t", "m", "low", "P", [], 3)
+    c = _RecClient([_Resp([], "ok")])
+    agent.run("the task", _ctx(), c)
+    inp = c.calls[0]["input"]
+    assert inp == [{"role": "user", "content": "the task"}]
+
+
 # ── recover, don't just retry (#gap 2) ────────────────────────────────────────
 
 def test_repeated_failure_forces_a_replan(db):
@@ -266,7 +320,8 @@ class _FakeTeam:
         self._reply = reply
         self.ran = []
 
-    def run(self, task, ctx, client, *, history=None, instructions=None):
+    def run(self, task, ctx, client, *, history=None, instructions=None,
+            context=""):
         self.ran.append(task)
         return self._reply
 

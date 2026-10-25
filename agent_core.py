@@ -215,17 +215,27 @@ class Agent:
 
     def run(self, task: str, ctx: Ctx, client: OpenAI, *,
             history: list[dict] | None = None,
-            instructions: str | None = None) -> str:
+            instructions: str | None = None, context: str = "") -> str:
         """Run until the model stops asking for tools. Returns its final text.
 
         One loop for every agent - orchestrator and specialist alike. The
-        orchestrator seeds `history` and a per-turn `instructions`; a specialist
-        gets a single task line and its own prompt."""
+        orchestrator seeds `history` and a specialist gets a single task line.
+
+        `context` is the per-turn memory (facts, preferences, recall). It goes
+        in the INPUT as a leading developer message, NOT prepended to
+        `instructions` - that is a pure cost fix with NO behaviour change: the
+        model gets the identical content in the same developer channel, but the
+        system prompt and the tool schemas now stay byte-identical every turn,
+        so OpenAI's prefix cache covers them (~10% price) instead of re-billing
+        the whole tool list each turn. The content the model reads is unchanged."""
         tools = self._tools()
         specs = [t.spec() for t in tools.values()]
         instr = instructions or self.instructions
-        convo: list[dict] = list(history or []) + [{"role": "user",
-                                                     "content": task}]
+        convo: list[dict] = []
+        if context:
+            convo.append({"role": "developer", "content": context})
+        convo += list(history or [])
+        convo.append({"role": "user", "content": task})
         effort = self.effort
         failures = 0
 
@@ -1151,7 +1161,7 @@ def _is_trivial(text: str) -> bool:
 
 
 def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
-                       history: list, instructions: str, emit) -> str:
+                       history: list, context: str, emit) -> str:
     """One self-check, and at most one repair. Returns the final reply.
 
     Fires only when a tool actually ran (so pure chat and read-only answers the
@@ -1177,7 +1187,7 @@ def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
                               {"role": "assistant", "content": reply}]
     try:
         fixed = team.run(repair, ctx, _client(), history=seeded,
-                         instructions=instructions)
+                         context=context)
         fixed = _strip_source_tag(brain.vet(fixed, ctx.evidence) or reply)
     except Exception as e:
         state.record_error("agent.repair", e)
@@ -1210,7 +1220,10 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
               "detail": say[:150]})
         emit({"type": "reply", "text": say})
         brain._remember_turn(channel, "out", say)
-        memory.capture_turn(text, say, source=transport.value)
+        # No capture_turn here: the fast path only ever answers deterministic,
+        # trivial ops ("open chrome", "what's my cpu", "pause") that teach
+        # nothing durable, so the background learning call was pure spend. The
+        # turn is still remembered in the channel history above.
         return say
 
     # The daily cap. Past it, work that costs tokens stops; read-only status
@@ -1253,13 +1266,15 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     history = brain._recent_turns(channel)
     # INTELLIGENT MEMORY: pull the memories that bear on THIS request (by
     # meaning, not recency) into the prompt, so the brain answers from what it
-    # actually knows rather than only the last few lines.
-    instructions = (team.instructions + state.facts_block()
-                    + memory.preferences_block()        # how he likes things done
-                    + memory.recall_block(text)
-                    + (state.as_context(jid) if jid else ""))
-    reply = team.run(text, ctx, _client(), history=history,
-                     instructions=instructions)
+    # actually knows rather than only the last few lines. This goes in as the
+    # per-turn CONTEXT (a leading developer message), NOT glued onto the system
+    # prompt - identical content for the model, but the system prompt and tool
+    # schemas stay byte-identical so the prefix cache covers them.
+    context = (state.facts_block()
+               + memory.preferences_block()             # how he likes things done
+               + memory.recall_block(text)
+               + (state.as_context(jid) if jid else ""))
+    reply = team.run(text, ctx, _client(), history=history, context=context)
 
     reply = brain.vet(reply, ctx.evidence) or "Done."
     # vet tags the source ([state]/[guess]) for its own honesty checks; strip
@@ -1275,7 +1290,7 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # ONE repair: if the check finds a concrete gap, hand that one gap back and
     # let the orchestrator finish it, then the answer stands. This is the piece
     # budget.py was always designed around.
-    reply = _verify_and_repair(text, reply, team, ctx, history, instructions, emit)
+    reply = _verify_and_repair(text, reply, team, ctx, history, context, emit)
 
     emit({"type": "reply", "text": reply})
     brain._remember_turn(channel, "out", reply)
