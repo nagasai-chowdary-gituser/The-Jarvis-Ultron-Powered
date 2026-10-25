@@ -146,6 +146,39 @@ def test_awareness_stays_quiet_when_nothing(db, monkeypatch):
     assert not calls, "awareness spoke when nothing mattered"
 
 
+def test_awareness_prepares_proactively(db, monkeypatch):
+    # A PA gets things ready, not just warns: a safe prep becomes a CONSTRAINED
+    # background agent_task, routed through the orchestrator (draft-first etc.).
+    state.add_commitment("reply to the client about the proposal", due="today")
+    _fake_openai(monkeypatch,
+                 '{"act": true, "urgent": false,'
+                 ' "message": "Drafting your client reply.",'
+                 ' "prepare": "draft a reply to the client about the proposal"}')
+    added = []
+    monkeypatch.setattr(worker.state, "add_job",
+                        lambda kind, params, *a, **k: added.append((kind, params)) or 1)
+    monkeypatch.setattr(worker, "tell_boss", lambda m, **k: None)
+    monkeypatch.setattr(worker, "call_boss", lambda m, **k: None)
+    assert worker.awareness_pulse() is True
+    assert added and added[0][0] == "agent_task"
+    assert added[0][1].get("proactive") is True
+    assert "PROACTIVE PREP" in added[0][1]["request"]      # never auto-sends
+
+
+def test_proactive_prep_can_be_turned_off(db, monkeypatch):
+    state.set_fact("proactive_prep", "off")
+    state.add_commitment("reply to the client", due="today")
+    _fake_openai(monkeypatch,
+                 '{"act": false, "urgent": false, "message": "",'
+                 ' "prepare": "draft a reply to the client"}')
+    added = []
+    monkeypatch.setattr(worker.state, "add_job",
+                        lambda *a, **k: added.append(a) or 1)
+    monkeypatch.setattr(worker, "tell_boss", lambda m, **k: None)
+    assert worker.awareness_pulse() is False
+    assert not added                                       # nothing prepared
+
+
 def test_awareness_skips_model_when_world_is_empty(db, monkeypatch):
     # No commitments, jobs or moved threads -> no spend, no model call.
     class Boom:

@@ -686,6 +686,44 @@ def goto(url: str, new_tab: bool = False) -> dict:
                 "spoken": "I could not open that page."}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Knowing when the page is a wall, not the page you wanted
+#
+# Two obstacles ended a browser task in a six-minute loop before: a signed-out
+# page the agent kept scraping, and a captcha it could neither solve nor admit
+# to. They need OPPOSITE responses - a login is fixable (the owner signs in once
+# in Jarvis's Chrome), a captcha is NOT (Jarvis must never try to defeat a
+# human-verification challenge, and must never pretend it got past one). So the
+# first job is telling them apart, cheaply and from the page's own text.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CAPTCHA_SIGNS = (
+    "captcha", "recaptcha", "hcaptcha", "i'm not a robot", "i am not a robot",
+    "are you a robot", "are you human", "verify you are human",
+    "verify you're human", "unusual traffic", "cloudflare",
+    "checking your browser", "press and hold", "complete the challenge",
+    "security check")
+_LOGIN_SIGNS = (
+    "sign in", "signin", "log in", "login", "sign up", "create account",
+    "continue with google", "enter your password", "forgot password",
+    "you're signed out", "you are signed out", "session expired",
+    "please log in", "please sign in", "continue as guest")
+
+
+def classify_obstacle(text: str, url: str = "") -> str:
+    """Is this page a wall rather than the content? Returns 'captcha', 'login'
+    or '' (none). CAPTCHA is checked first and wins, because a challenge page
+    often also shows a 'sign in' link, and mistaking a captcha for a login
+    sends the owner to sign in at a wall he cannot clear. Pure and offline: the
+    agent loop and the read path both lean on it, so it must be deterministic."""
+    blob = f"{url}\n{text}".lower()
+    if any(s in blob for s in _CAPTCHA_SIGNS):
+        return "captcha"
+    if any(s in blob for s in _LOGIN_SIGNS):
+        return "login"
+    return ""
+
+
 @pinned
 def read(selector: str = "", max_chars: int = 4000) -> dict:
     """Read the page's visible text — what is actually there, not what a
@@ -709,9 +747,20 @@ def read(selector: str = "", max_chars: int = 4000) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}",
                 "spoken": "I could not read that page."}
     text = "\n".join(l.strip() for l in text.splitlines() if l.strip())
-    return {"ok": True, "title": page.title()[:90], "url": page.url[:140],
-            "text": text[:max_chars],
-            "truncated": len(text) > max_chars}
+    out = {"ok": True, "title": page.title()[:90], "url": page.url[:140],
+           "text": text[:max_chars], "truncated": len(text) > max_chars}
+    obstacle = classify_obstacle(text[:4000], page.url)
+    if obstacle:
+        # Say it plainly in the result so a caller does not keep scraping a wall.
+        out["obstacle"] = obstacle
+        out["obstacle_hint"] = (
+            "This is Jarvis's own Chrome and it is signed out here - call "
+            "setup_login(url) and ask the Boss to sign in once."
+            if obstacle == "login" else
+            "This is a human-verification challenge (captcha). Do NOT try to "
+            "solve it and do NOT pretend you got past it - stop and tell the "
+            "Boss it needs him.")
+    return out
 
 
 @pinned

@@ -714,7 +714,9 @@ Surface ONLY what genuinely matters: a commitment that is overdue or due today, 
 
 Call him (urgent=true) only when it truly cannot wait; otherwise send a quiet message. Speak as a person would, naming who and what.
 
-Output ONLY JSON: {"act": true|false, "urgent": true|false, "message": "<one or two short lines for the Boss, or empty>"}"""
+A real PA does not only warn - it gets things READY. If there is something you could safely prepare for him right now WITHOUT being asked - draft a reply he will clearly want, gather the facts behind a decision, prepare an agenda or a summary - put that one task in "prepare". PREPARE MEANS READY, NOT DONE: whatever you put there must never send a message, email anyone, spend, buy, book, delete, or commit anything on its own - an email stays a draft, ready for him to send. Only propose a prep that is clearly useful and clearly safe; leave "prepare" empty otherwise, which is most of the time.
+
+Output ONLY JSON: {"act": true|false, "urgent": true|false, "message": "<one or two short lines for the Boss, or empty>", "prepare": "<one prep task to get ready now, or empty>"}"""
 
 
 def _world_snapshot() -> str:
@@ -798,17 +800,78 @@ def awareness_pulse() -> bool:
         obj = _json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
     except Exception:
         return False
-    msg = str(obj.get("message", "")).strip()
-    if not (obj.get("act") and msg):
-        return False
+    did = False
 
-    state.set_fact(AWARENESS_LAST_MSG, msg[:200])
-    if obj.get("urgent"):
-        call_boss(msg)                      # call -> Telegram fallback
-    else:
-        tell_boss(msg)                      # quiet msg, through the cooldown gate
-    log(f"awareness -> Boss: {msg[:90]}")
-    return True
+    # PROACTIVE PREP: the PA gets something ready, not just a warning. Bounded -
+    # off by a fact flag, at most one prep in flight, and not a repeat of the
+    # last one - and routed as a CONSTRAINED agent_task through the orchestrator,
+    # so draft-first/never-send/never-spend/never-delete all still apply. It
+    # reports back on its own when ready.
+    prep = str(obj.get("prepare", "")).strip()
+    if prep and _proactive_enabled() and not _recent_prep(prep) \
+            and not _has_pending_prep():
+        _start_prep(prep)
+        state.set_fact(PROACTIVE_KEY, prep[:120])
+        log(f"awareness -> preparing: {prep[:90]}")
+        did = True
+
+    msg = str(obj.get("message", "")).strip()
+    if obj.get("act") and msg:
+        state.set_fact(AWARENESS_LAST_MSG, msg[:200])
+        if obj.get("urgent"):
+            call_boss(msg)                  # call -> Telegram fallback
+        else:
+            tell_boss(msg)                  # quiet msg, through the cooldown gate
+        log(f"awareness -> Boss: {msg[:90]}")
+        did = True
+
+    return did
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Proactive preparation — initiative with the brakes on
+# ─────────────────────────────────────────────────────────────────────────────
+
+PROACTIVE_KEY = "last_proactive_prep"
+
+
+def _proactive_enabled() -> bool:
+    """On by default (the Boss asked for initiative); he can switch it off with
+    a 'proactive_prep' fact set to 'off'."""
+    return (state.facts().get("proactive_prep") or "on").lower() != "off"
+
+
+def _recent_prep(task: str) -> bool:
+    """Don't prepare the same thing twice in a row."""
+    last = (state.facts().get(PROACTIVE_KEY) or "").lower()
+    return bool(last) and task[:60].lower() in last
+
+
+def _has_pending_prep() -> bool:
+    """At most one proactive prep in flight, so initiative can never pile up."""
+    try:
+        for j in state.jobs("pending"):
+            p = j.get("params") or {}
+            if j.get("kind") == "agent_task" and isinstance(p, dict) \
+                    and p.get("proactive"):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _start_prep(task: str) -> int:
+    """Schedule the prep as a CONSTRAINED background agent_task. The prefix is
+    belt-and-braces over the orchestrator's own rules: ready it, report it,
+    commit nothing."""
+    request = (
+        "PROACTIVE PREP - the Boss has NOT asked for this yet; you noticed it "
+        "would help. GET IT READY and then report what you readied. You must "
+        "NOT send a message, email anyone, spend, buy, book, delete, or commit "
+        "anything - an email stays a DRAFT for him to send. When it is ready, "
+        "tell him in one line what is waiting and that you did not send it.\n\n"
+        f"TASK: {task}")
+    return state.add_job("agent_task", {"request": request, "proactive": True})
 
 
 def maybe_awareness() -> bool:

@@ -901,7 +901,14 @@ _ROLE_RULES = {
         "'guest' state, or it asks the Boss to sign in - you are in Jarvis's "
         "own Chrome, which needs a one-time sign-in: call setup_login(url) and "
         "tell the Boss to sign in once in the Jarvis Chrome window. Do NOT "
-        "report the task done, and never pretend you saw his account.",
+        "report the task done, and never pretend you saw his account. "
+        "IF THE PAGE IS A CAPTCHA OR HUMAN-VERIFICATION CHALLENGE - 'verify you "
+        "are human', 'I'm not a robot', 'checking your browser', 'unusual "
+        "traffic' - you CANNOT and MUST NOT try to solve it, and you must never "
+        "claim you got past one. Stop and report BLOCKED: the page needs the "
+        "Boss himself. IF A PAGE DOES NOT MATCH WHAT YOU EXPECTED (it changed, "
+        "a selector finds nothing), re-read it ONCE to see what is actually "
+        "there and adapt - do not repeat the same failing click.",
 }
 
 
