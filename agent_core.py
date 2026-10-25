@@ -172,7 +172,8 @@ def guard(tool: Tool, args: dict, ctx: Ctx) -> dict | None:
 # URLs, different files). Browser tools are NOT here: there is one page, so two
 # concurrent reads of it would race. Writes are never here.
 _READ_ONLY_FUNCS = {"web_search", "web_fetch", "recall", "stats", "processes",
-                    "list_windows", "read_window", "list_apps"}
+                    "list_windows", "read_window", "list_apps",
+                    "recent_activity"}
 _READ_ONLY_MCP = {"read_file", "read_text_file", "read_multiple_files",
                   "get_file_info", "list_directory", "list_directory_with_sizes",
                   "directory_tree", "search_files", "list_allowed_directories"}
@@ -390,19 +391,26 @@ class Agent:
             (ctx.evidence["failures"]).append(held)
             return held
 
+        import time as _time
+        t0 = _time.perf_counter()
         try:
             result = tool.call(args, ctx)
         except Blocked as b:
             result = {"ok": False, "status": "blocked", "error": b.reason}
         except Exception as e:
             result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        dur_ms = int((_time.perf_counter() - t0) * 1000)
 
         (ctx.evidence["results"] if result.get("ok")
          else ctx.evidence["failures"]).append(result)
+        detail = str(result.get("text") or result.get("stdout")
+                     or result.get("note") or result.get("error") or "")[:200]
+        # WRITE DOWN WHAT JUST HAPPENED, so a later turn can answer "what did you
+        # do / how long / what went wrong" from fact instead of guessing.
+        state.record_action(name, bool(result.get("ok")), dur_ms, detail,
+                            channel=ctx.channel)
         ctx.say({"type": "tool_result", "name": name,
-                 "ok": bool(result.get("ok")),
-                 "detail": str(result.get("text") or result.get("stdout")
-                               or result.get("error") or "")[:200]})
+                 "ok": bool(result.get("ok")), "detail": detail})
         return result
 
 
@@ -534,6 +542,86 @@ def _whatsapp_read(args, ctx) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}",
                 "note": "could not read the chat - is WhatsApp Desktop open and "
                         "signed in, with its debug port up?"}
+
+
+def _recent_activity(args, ctx) -> dict:
+    """What Jarvis ACTUALLY did recently - the real log, so a follow-up question
+    is answered from fact, not invention."""
+    limit = int(args.get("limit") or 15)
+    acts = state.recent_actions(limit)
+    items = [{"tool": a["tool"], "ok": bool(a["ok"]),
+              "seconds": round((a["duration_ms"] or 0) / 1000.0, 2),
+              "detail": a["detail"]} for a in acts]
+    fails = [i for i in items if not i["ok"]]
+    total_s = round(sum(i["seconds"] for i in items), 1)
+    errs = state.recent_errors(5)
+    return {"ok": True, "count": len(items), "actions": items,
+            "failures": fails, "total_seconds": total_s,
+            "recent_errors": [f"{e.get('where_')}: {e.get('kind')}" for e in errs],
+            "note": "This is your real activity log - answer from it, never "
+                    "guess what you did or how long it took."}
+
+
+def _make_pptx(args, ctx) -> dict:
+    """Build a .pptx DIRECTLY with python-pptx: one file, always saved, and NO
+    PowerPoint window opens. Replaces driving PowerPoint by COM, which opened a
+    window per slide and often never saved."""
+    import os
+    title = (args.get("title") or "Presentation").strip()
+    slides = args.get("slides") or []
+    name = (args.get("filename") or title or "presentation").strip()
+    if not name.lower().endswith(".pptx"):
+        name += ".pptx"
+    path = name if os.path.isabs(name) else os.path.join(str(safety.WORKSPACE),
+                                                         name)
+    try:
+        from pptx import Presentation
+        prs = Presentation()
+        try:
+            prs.core_properties.title = title    # deck title = metadata, NOT a slide
+        except Exception:
+            pass
+        # EXACTLY the slides asked for - "four slides" means four slides, not
+        # four plus a surprise title slide (that mismatch is its own bug).
+        for sl in slides:
+            if isinstance(sl, str):
+                sl = {"title": sl}
+            s = prs.slides.add_slide(prs.slide_layouts[1])   # title + content
+            s.shapes.title.text = str(sl.get("title") or "")
+            body = sl.get("bullets") or sl.get("body") or sl.get("content") or []
+            if isinstance(body, str):
+                body = [body]
+            tf = s.placeholders[1].text_frame
+            tf.clear()
+            for i, b in enumerate(body):
+                p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                p.text = str(b)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        prs.save(path)
+        n = len(prs.slides)
+        return {"ok": True, "path": path, "slides": n,
+                "note": f"Saved a {n}-slide deck to {path}. One file, saved on "
+                        f"disk - no PowerPoint window was opened."}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _call_me(args, ctx) -> dict:
+    """Place a REAL phone call to the Boss (Twilio). Honest by construction: it
+    returns ok only when the call was actually placed, and names the real reason
+    when it was not - it can never 'claim' a call the way the model once did."""
+    reason = (args.get("reason") or args.get("message") or "").strip()
+    if not reason:
+        return {"ok": False, "error": "nothing to say on the call"}
+    try:
+        from lib import phone
+        r = phone.call_me(reason)
+        return {"ok": True, "sid": r.get("sid"), "to": r.get("to"),
+                "note": "Call placed."}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}",
+                "note": "The call could NOT be placed - say so plainly to the "
+                        "Boss; never claim you called."}
 
 
 def _ensure_browser(args, ctx) -> dict:
@@ -830,6 +918,31 @@ WHATSAPP_READ = _t("whatsapp_read",
      "count": {"type": "integer", "description": "how many recent messages"}},
     ["contact"], _whatsapp_read)
 
+RECENT_ACTIVITY = _t("recent_activity",
+    "What you ACTUALLY did recently: each tool call, whether it worked, how many "
+    "seconds it took, and a short detail - plus recent errors and the total "
+    "time. Call this to answer the Boss about what you just did, how long it "
+    "took, or what went wrong. NEVER guess at your own activity - read it here.",
+    {"limit": {"type": "integer"}}, [], _recent_activity)
+
+MAKE_PPTX = _t("make_pptx",
+    "Create a PowerPoint (.pptx) and SAVE it - built directly, so NO PowerPoint "
+    "window opens and it is always written to disk. Use THIS for any deck; never "
+    "drive PowerPoint by COM/run_python (that opened a window per slide and "
+    "often never saved). Give a title and a list of slides, each an object "
+    "{title, bullets:[...]}. 'four slides' means four entries in the list, ONE "
+    "file.",
+    {"title": {"type": "string"},
+     "filename": {"type": "string", "description": "optional .pptx name"},
+     "slides": {"type": "array", "items": {"type": "object"}}},
+    ["title", "slides"], _make_pptx)
+
+CALL_ME = _t("call_me",
+    "Place a REAL phone call to the Boss over Twilio and speak a short message - "
+    "use when he says 'call me' or something needs him by voice. If it returns "
+    "ok=false the call did NOT happen; tell him why, never claim you called.",
+    {"reason": {"type": "string"}}, ["reason"], _call_me)
+
 ENSURE_BROWSER = _t("ensure_browser",
     "Start Jarvis's own Chrome with its debug port so the browser can be "
     "driven. Call this once before browsing.",
@@ -953,7 +1066,8 @@ _IDENTITY = """You are Jarvis, a personal agent on your owner's own Windows mach
 
 _HONESTY = """WHAT COUNTS AS TRUE
 Say what a tool RETURNED, never what you intended. A message is sent when the send returned an id; a file exists when the write returned its size. If a tool failed, say it failed and why. If you did not read something, you do not know it. Never say you are monitoring or watching unless schedule_job returned an id THIS turn. The database word "pending" means a job is ACTIVE and queued, not broken - do not tell the Boss an active job is dead.
-MEASURE, DON'T ASSERT. Before you claim you downloaded or created a file, that something is running, or that a command succeeded, PROVE it with verify_outcome and report what it actually found - a file that is missing, empty, or the wrong type has NOT been produced. Do not report such an outcome done on the strength of a tool you hoped worked."""
+MEASURE, DON'T ASSERT. Before you claim you downloaded or created a file, that something is running, or that a command succeeded, PROVE it with verify_outcome and report what it actually found - a file that is missing, empty, or the wrong type has NOT been produced. Do not report such an outcome done on the strength of a tool you hoped worked.
+KNOW WHAT YOU DID. To answer what you just did, how long it took, or what went wrong, call recent_activity and report from that real log - NEVER guess or say you have no log. If the Boss says 'call me', use call_me; if it returns ok=false the call did not happen - tell him why, never claim you called."""
 
 ORCH_PROMPT = _IDENTITY + """
 
@@ -969,6 +1083,7 @@ You lead a small team of specialists and you decide who does what. Hand a job to
   comms    - WhatsApp and Telegram. It OPENS the app itself, finds the contact safely over the app's own protocol, sends, and verifies. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
   coder    - read/write code and work with GitHub
 For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot. If a saved skill (a tool marked "[saved skill]") already does what is asked, just call it. When run_python solves something non-trivial that the Boss is likely to want again, call save_skill to crystallize it, so next time it is one call.
+To make a PowerPoint/deck, use make_pptx - it writes ONE saved .pptx with no window. "Four slides" means four entries in its slides list, NOT four files or four windows. Never open PowerPoint per slide.
 
 ROUTING - this is where turns go wrong, so get it right:
 - Messaging ANYONE on WhatsApp or Telegram is ONE comms call, and ONLY comms. comms opens the app itself, so NEVER send "open whatsapp" to desktop as a separate step, and never try to drive a chat app any other way. "open whatsapp and message Kap Cut hi" = one comms call: "send the WhatsApp message 'hi' to Kap Cut".
@@ -1130,7 +1245,8 @@ def build_team(force: bool = False) -> Agent:
                      [RUN_PYTHON] + extra_tools, MAX_ROUNDS_SUB,
                      mcp_groups=[group])
 
-    files = sub("files", "files specialist", "files", [VERIFY_OUTCOME])
+    files = sub("files", "files specialist", "files",
+                [VERIFY_OUTCOME, MAKE_PPTX])
     browser = sub("browser", "browser specialist", "browser",
                   [ENSURE_BROWSER, SETUP_LOGIN, VERIFY_OUTCOME])
     desktop = sub("desktop", "desktop specialist", "desktop",
@@ -1146,8 +1262,9 @@ def build_team(force: bool = False) -> Agent:
 
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
-    orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, REMEMBER,
-                   RECALL, SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
+    orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, MAKE_PPTX,
+                   RECENT_ACTIVITY, CALL_ME, REMEMBER, RECALL, SCHEDULE_JOB,
+                   DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN]
     # Crystallized skills become first-class tools - the whole point of saving
     # one is that next time it is a direct call, routed by its description. A

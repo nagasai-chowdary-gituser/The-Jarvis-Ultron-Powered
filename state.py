@@ -696,3 +696,71 @@ def clear_errors(db_path: Path | None = None) -> None:
         c.commit()
     finally:
         c.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Activity log — WHAT Jarvis actually did, so it can answer for itself later
+#
+# The HUD shows every tool call live, but nothing was ever written down, so a
+# follow-up turn ("what did you just do? how long did it take? what went wrong?")
+# had no data and the model either said "I have no log" or made something up.
+# This records every tool call - name, success, how long, a short detail - so
+# the next turn can read its own history and answer truthfully.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ACTION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS actions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          REAL NOT NULL,
+    channel     TEXT,
+    tool        TEXT NOT NULL,
+    ok          INTEGER NOT NULL DEFAULT 1,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_actions_ts ON actions(ts);
+"""
+KEEP_ACTIONS = 800
+
+
+def record_action(tool: str, ok: bool, duration_ms: int = 0, detail: str = "",
+                  channel: str = "", db_path: Path | None = None) -> None:
+    """Note one tool call. Never raises - logging must not break a turn.
+
+    The table is ensured on every call (CREATE ... IF NOT EXISTS is idempotent
+    and cheap); a cached 'ready' boolean would skip creation on a second
+    database, which is exactly what tests and a DB swap hit."""
+    try:
+        c = _conn(db_path)
+        try:
+            c.executescript(ACTION_SCHEMA)
+            c.execute("INSERT INTO actions (ts, channel, tool, ok, duration_ms,"
+                      " detail) VALUES (?,?,?,?,?,?)",
+                      (time.time(), str(channel)[:60], str(tool)[:60],
+                       1 if ok else 0, int(duration_ms), redact(str(detail))[:500]))
+            c.execute("DELETE FROM actions WHERE id NOT IN"
+                      " (SELECT id FROM actions ORDER BY id DESC LIMIT ?)",
+                      (KEEP_ACTIONS,))
+            c.commit()
+        finally:
+            c.close()
+    except Exception:
+        pass
+
+
+def recent_actions(limit: int = 20, since_ts: float = 0.0,
+                   db_path: Path | None = None) -> list[dict]:
+    """The last tool calls, newest first - what ran, whether it worked, how
+    long it took, and a short detail/error."""
+    c = _conn(db_path)
+    try:
+        c.executescript(ACTION_SCHEMA)
+        if since_ts:
+            rows = c.execute("SELECT * FROM actions WHERE ts>=? ORDER BY id DESC"
+                             " LIMIT ?", (since_ts, limit)).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM actions ORDER BY id DESC LIMIT ?",
+                             (limit,)).fetchall()
+    finally:
+        c.close()
+    return [dict(r) for r in rows]

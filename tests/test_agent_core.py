@@ -211,6 +211,63 @@ def test_whatsapp_read_reports_a_real_failure_not_silence(db, monkeypatch):
     assert out["ok"] is False and "port" in out["error"].lower()
 
 
+# ── it knows what it did, makes real files, and is honest about calling ───────
+
+def test_make_pptx_writes_exactly_the_slides_asked_for(tmp_path):
+    out = agent_core._make_pptx(
+        {"title": "2026 Nepal Floods",
+         "filename": str(tmp_path / "nepal.pptx"),
+         "slides": [{"title": "Overview", "bullets": ["heavy monsoon", "flooding"]},
+                    {"title": "Impact", "bullets": ["displaced families"]},
+                    {"title": "Response"},
+                    {"title": "Outlook", "bullets": ["recovery", "aid"]}]},
+        _ctx())
+    assert out["ok"] and out["slides"] == 4          # four means FOUR, one file
+    p = Path(out["path"])
+    assert p.exists() and p.stat().st_size > 0        # actually saved to disk
+
+
+def test_activity_log_lets_jarvis_answer_for_itself(db):
+    state.record_action("make_pptx", True, 1800, "saved nepal.pptx",
+                        channel="chan:test")
+    state.record_action("run_python", False, 300, "FileNotFoundError",
+                        channel="chan:test")
+    out = agent_core._recent_activity({"limit": 10}, _ctx())
+    assert out["ok"] and out["count"] == 2
+    tools = [a["tool"] for a in out["actions"]]
+    assert "make_pptx" in tools and "run_python" in tools
+    assert out["failures"] and out["failures"][0]["tool"] == "run_python"
+    assert out["total_seconds"] > 0                   # "how long" is answerable
+
+
+def test_dispatch_writes_the_action_log(db):
+    def probe(args, ctx):
+        return {"ok": True, "text": "value=42"}
+    tool = agent_core.Tool("probe", "d",
+                           {"type": "object", "properties": {}}, probe)
+    agent = agent_core.Agent("t", "m", "low", "inst", [tool], 5)
+    script = [_Resp([_FC("probe", {}, "c1")]), _Resp([], "done")]
+    agent.run("go", _ctx(), FakeClient(script))
+    assert any(a["tool"] == "probe" and a["ok"] for a in state.recent_actions(5))
+
+
+def test_call_me_is_honest_when_it_cannot_call(db, monkeypatch):
+    from lib import phone
+
+    def boom(reason):
+        raise RuntimeError("Twilio or MY_NUMBER not configured")
+    monkeypatch.setattr(phone, "call_me", boom)
+    out = agent_core._call_me({"reason": "the deck is ready"}, _ctx())
+    assert out["ok"] is False and "twilio" in out["error"].lower()
+
+
+def test_call_me_reports_a_real_placed_call(db, monkeypatch):
+    from lib import phone
+    monkeypatch.setattr(phone, "call_me", lambda reason: {"sid": "CA123", "to": "+91…"})
+    out = agent_core._call_me({"reason": "done"}, _ctx())
+    assert out["ok"] is True and out["sid"] == "CA123"
+
+
 def test_fast_path_does_not_spend_on_learning(db, monkeypatch):
     """A fast-path turn answers a trivial, deterministic op - there is nothing
     durable to learn, so the background capture call must not fire."""
