@@ -52,3 +52,8 @@ scratchpad_*
 .ruff_cache/
 .mypy_cache/
 .playwright-mcp/
+
+# Google API (owner secrets - never commit)
+google_credentials.json
+google_token.json
+*_token.json

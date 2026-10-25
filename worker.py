@@ -655,6 +655,25 @@ def _world_snapshot() -> str:
         for th in moved[:6]:
             who = th.get("name") or (th.get("jid") or "").split("@")[0]
             lines.append(f"- {who}: {(th.get('summary') or '')[:120]}")
+
+    # His calendar and inbox, once he has connected Google. These are what make
+    # the awareness loop a real PA rather than a WhatsApp watcher.
+    try:
+        from lib import google
+        if google.is_setup():
+            cal = google.calendar_upcoming(hours=12)
+            if cal.get("ok") and cal.get("events"):
+                lines.append("Upcoming on your calendar:")
+                for ev in cal["events"][:6]:
+                    lines.append(f"- {ev['start']}: {ev['summary']}")
+            mail = google.gmail_unread(6)
+            if mail.get("ok") and mail.get("unread"):
+                lines.append("Unread inbox email:")
+                for m in mail["unread"]:
+                    lines.append(f"- {m['from'][:40]}: {m['subject'][:80]}")
+    except Exception:
+        pass
+
     last = state.facts().get(AWARENESS_LAST_MSG) or ""
     if last:
         lines.append(f"(You recently told him: {last[:150]})")

@@ -539,6 +539,38 @@ WEB_SEARCH = _t("web_search", "Search the web. Returns titles, urls, snippets.",
 WEB_FETCH = _t("web_fetch", "Fetch a URL's readable text (fenced as data).",
     {"url": {"type": "string"}}, ["url"], _web_fetch)
 
+
+def _read_calendar(args, ctx) -> dict:
+    from lib import google
+    return google.calendar_upcoming(hours=int(args.get("hours") or 24))
+
+
+def _read_email(args, ctx) -> dict:
+    from lib import google
+    return google.gmail_unread(int(args.get("count") or 8))
+
+
+def _connect_google(args, ctx) -> dict:
+    from lib import google
+    return google.setup()
+
+
+READ_CALENDAR = _t("read_calendar",
+    "Read the Boss's upcoming Google Calendar events. Needs Google connected; "
+    "if not, the result says so - tell him to say 'connect google'.",
+    {"hours": {"type": "integer"}}, [], _read_calendar)
+
+READ_EMAIL = _t("read_email",
+    "Read the Boss's unread inbox email (sender, subject, snippet). Needs "
+    "Google connected; if not, the result says so.",
+    {"count": {"type": "integer"}}, [], _read_email)
+
+CONNECT_GOOGLE = _t("connect_google",
+    "Start the ONE-TIME Google sign-in so Jarvis can read the Boss's calendar "
+    "and inbox. Opens a browser for him to approve once. Needs "
+    "google_credentials.json in the Jarvis folder first.",
+    {}, [], _connect_google)
+
 SCHEDULE_JOB = _t("schedule_job",
     "Hand work to the background worker. Returns a job id immediately. The ONLY "
     "way to do anything that waits or runs after this turn ends. kinds: "
@@ -832,7 +864,7 @@ def build_team(force: bool = False) -> Agent:
                    LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
                    SET_CONTROL])
     research = sub("research", "research specialist", "research",
-                   [WEB_SEARCH, WEB_FETCH])
+                   [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
                 [WHATSAPP_SEND, MESSAGE_BOSS])
     coder = sub("coder", "coding specialist", "coder", [])
@@ -840,8 +872,8 @@ def build_team(force: bool = False) -> Agent:
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
     orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB,
-                   DELETE_JOBS, ASK_BOSS,
-                   MESSAGE_BOSS]
+                   DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
+                   READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE]
 
     # terra at medium: routing and the final answer are where a wrong call
     # shows as dumbness, so this stays smart. The fast path carries the

@@ -60,6 +60,18 @@ _LOGIN_SETUP = re.compile(
     r"^(?:set\s*up|setup|configure|fix)\s+(?:my\s+|the\s+)?"
     r"(?:browser|chrome|jarvis(?:'s)?)?\s*(?:browser\s+)?login(?:s)?$", re.I)
 
+# Google: connect once, then read calendar / inbox.
+_GOOGLE_CONNECT = re.compile(
+    r"^(?:connect|set\s*up|setup|link|sign\s*in\s*to)\s+(?:my\s+|the\s+)?google"
+    r"(?:\s+account)?$", re.I)
+_CALENDAR = re.compile(
+    r"^(?:what(?:'s|s| is)?\s+)?(?:on\s+)?(?:my\s+|the\s+)?"
+    r"(?:calendar|schedule|agenda|meetings?|events?)"
+    r"(?:\s+(?:today|now|coming up|next|this week))?\s*\??$", re.I)
+_EMAIL = re.compile(
+    r"^(?:check\s+)?(?:any\s+)?(?:my\s+|new\s+|unread\s+)*"
+    r"(?:e-?mails?|inbox|mails?)(?:\s+(?:now|today|please))?\s*\??$", re.I)
+
 # Job management - "delete all jobs", "stop and remove all jobs", "delete job 10".
 _JOBS_DELETE_ALL = re.compile(
     r"^(?:stop\s+and\s+)?(?:delete|remove|clear|cancel|stop|kill)\s+"
@@ -85,8 +97,11 @@ _RUNNING = re.compile(r"^(?:what(?:'s|s| is)?\s+)?(?:is\s+)?running"
                       r"\s*\??$", re.I)
 
 # Words that mean this is NOT a trivial request even if it looks like one.
+# NOTE: "schedule" is deliberately NOT here - it blocked "my schedule today"
+# (the calendar) from ever reaching the calendar route. "schedule a reminder"
+# still falls through to the model, because no fast path matches it.
 _COMPLEX = re.compile(
-    r"\b(and then|then|after that|also|if |when |until |every |schedule|"
+    r"\b(and then|then|after that|also|if |when |until |every |"
     r"remind|monitor|watch|compare|research|summar|explain|why|fix|debug)\b",
     re.I)
 
@@ -123,6 +138,45 @@ def _do_setup_login(_: str = "") -> dict:
                    "in once in that window - it stays signed in for every future "
                    "task.",
             "evidence": r}
+
+
+def _do_google_connect(_: str = "") -> dict:
+    from lib import google
+    r = google.setup()
+    if not r.get("ok"):
+        raise ValueError(r.get("error", "could not start Google sign-in"))
+    return {"ok": True, "say": r.get("note", "Google is connected."),
+            "evidence": r}
+
+
+def _do_calendar(_: str = "") -> dict:
+    from lib import google
+    r = google.calendar_upcoming(hours=24)
+    if not r.get("ok"):
+        raise ValueError(r.get("error", "calendar unavailable"))
+    evs = r.get("events") or []
+    if not evs:
+        return {"ok": True, "say": "Nothing on your calendar in the next day.",
+                "evidence": r}
+    parts = [f"{e['summary']} at {str(e['start'])[11:16] or e['start']}"
+             for e in evs[:5]]
+    return {"ok": True, "say": "Coming up: " + "; ".join(parts) + ".",
+            "evidence": r}
+
+
+def _do_email(_: str = "") -> dict:
+    from lib import google
+    r = google.gmail_unread(8)
+    if not r.get("ok"):
+        raise ValueError(r.get("error", "email unavailable"))
+    un = r.get("unread") or []
+    if not un:
+        return {"ok": True, "say": "No unread inbox email.", "evidence": r}
+    first = un[0]
+    frm = first["from"].split("<")[0].strip().strip('"')
+    say = (f"{len(un)} unread. Latest from {frm[:30]}: "
+           f"{first['subject'][:60]}.")
+    return {"ok": True, "say": say, "evidence": r}
 
 
 def _do_delete_all_jobs(_: str = "") -> dict:
@@ -198,6 +252,9 @@ _ROUTES = (
     (_RUNNING, _do_running, None),
     (_MEDIA, _do_media, "action"),
     (_LOGIN_SETUP, _do_setup_login, None),
+    (_GOOGLE_CONNECT, _do_google_connect, None),
+    (_CALENDAR, _do_calendar, None),
+    (_EMAIL, _do_email, None),
     (_JOBS_DELETE_ALL, _do_delete_all_jobs, None),
     (_JOB_DELETE_ONE, _do_delete_job, "n"),
     (_CHROME_PROFILE, _do_chrome_profile, "which"),   # BEFORE _OPEN
