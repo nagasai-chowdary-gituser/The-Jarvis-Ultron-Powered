@@ -555,6 +555,24 @@ def _connect_google(args, ctx) -> dict:
     return google.setup()
 
 
+def _email_draft(args, ctx) -> dict:
+    from lib import google
+    return google.create_draft(args.get("to", ""), args.get("subject", ""),
+                               args.get("body", ""))
+
+
+def _email_send(args, ctx) -> dict:
+    from lib import google
+    return google.send_draft(args.get("draft_id", ""))
+
+
+def _calendar_create(args, ctx) -> dict:
+    from lib import google
+    return google.calendar_create(
+        args.get("title", ""), args.get("start", ""), args.get("end", ""),
+        args.get("attendees") or None, args.get("description", ""))
+
+
 READ_CALENDAR = _t("read_calendar",
     "Read the Boss's upcoming Google Calendar events. Needs Google connected; "
     "if not, the result says so - tell him to say 'connect google'.",
@@ -567,9 +585,30 @@ READ_EMAIL = _t("read_email",
 
 CONNECT_GOOGLE = _t("connect_google",
     "Start the ONE-TIME Google sign-in so Jarvis can read the Boss's calendar "
-    "and inbox. Opens a browser for him to approve once. Needs "
-    "google_credentials.json in the Jarvis folder first.",
+    "and inbox AND draft/send mail and create events. Opens a browser for him "
+    "to approve once. Needs the OAuth client file in the Jarvis folder first.",
     {}, [], _connect_google)
+
+EMAIL_DRAFT = _t("email_draft",
+    "Compose an email as a DRAFT (it is NOT sent). Always do this first, show "
+    "the draft to the Boss, and only send after he confirms. Returns a draft_id.",
+    {"to": {"type": "string"}, "subject": {"type": "string"},
+     "body": {"type": "string"}}, ["to", "subject", "body"], _email_draft)
+
+EMAIL_SEND = _t("email_send",
+    "Send a draft the Boss has CONFIRMED, by its draft_id (from email_draft). "
+    "Never call this until he has seen the draft and said to send it.",
+    {"draft_id": {"type": "string"}}, ["draft_id"], _email_send)
+
+CALENDAR_CREATE = _t("calendar_create",
+    "Create a calendar event. start/end are ISO datetimes (end optional, "
+    "defaults to +1h). For an event with OTHER attendees, show it and get the "
+    "Boss's ok first; an event only for him you may create directly.",
+    {"title": {"type": "string"}, "start": {"type": "string"},
+     "end": {"type": "string"},
+     "attendees": {"type": "array", "items": {"type": "string"}},
+     "description": {"type": "string"}},
+    ["title", "start"], _calendar_create)
 
 SCHEDULE_JOB = _t("schedule_job",
     "Hand work to the background worker. Returns a job id immediately. The ONLY "
@@ -762,12 +801,18 @@ Short. One or two sentences, no markdown, no bullet points - it is often read al
 
 _ROLE_RULES = {
     "communications specialist":
-        "To send a WhatsApp message, call whatsapp_send(contact, text): it "
-        "opens WhatsApp, finds the contact safely over CDP, sends, and reads the "
-        "message back as proof. To message the Boss himself, use message_boss. "
-        "NEVER use run_python, screenshots, OCR or key-presses to drive a chat "
-        "app - whatsapp_send already does it correctly. If whatsapp_send says a "
-        "name matches more than one chat, report the options; do not guess.",
+        "WhatsApp: call whatsapp_send(contact, text) - it opens WhatsApp, finds "
+        "the contact safely over CDP, sends, and reads the message back as "
+        "proof. To message the Boss himself, use message_boss. NEVER drive a "
+        "chat app with run_python/screenshots/OCR/key-presses. If a name "
+        "matches more than one chat, report the options; do not guess. "
+        "EMAIL is DRAFT-FIRST, always: call email_draft(to, subject, body), "
+        "SHOW the Boss the draft, and STOP - call email_send(draft_id) only "
+        "after he explicitly says to send. Never auto-send to a client or an "
+        "important person without his ok. CALENDAR: an event only for the Boss "
+        "you may create with calendar_create directly; an event with other "
+        "attendees, show it and confirm first. You never delete an email or an "
+        "event - there is no tool for it.",
     "desktop specialist":
         "You control the machine and its NATIVE apps. open_app launches; media "
         "is the media keys; clipboard, processes, stats for the system. To "
@@ -894,7 +939,8 @@ def build_team(force: bool = False) -> Agent:
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
-                [WHATSAPP_SEND, MESSAGE_BOSS])
+                [WHATSAPP_SEND, MESSAGE_BOSS, EMAIL_DRAFT, EMAIL_SEND,
+                 CALENDAR_CREATE, READ_EMAIL, READ_CALENDAR])
     coder = sub("coder", "coding specialist", "coder", [])
 
     orch_tools = [agent_as_tool(a, client) for a in
