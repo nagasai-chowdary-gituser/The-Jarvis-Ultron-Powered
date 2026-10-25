@@ -771,6 +771,46 @@ def _watches_snapshot() -> list[dict]:
     return out
 
 
+async def worker_watchdog() -> None:
+    """Keep the worker alive. It is what runs the awareness loop and every job,
+    so if it dies the whole autonomous side goes quiet with no visible error.
+
+    The worker touches data/worker.heartbeat each tick. If that goes stale AND
+    no worker process is actually running, relaunch it. The process check is
+    what stops a merely-slow worker from being double-started."""
+    import subprocess
+    import time as _t
+    hb = ROOT / "data" / "worker.heartbeat"
+    await asyncio.sleep(90)              # give the one jarvis.bat started time to beat
+    while True:
+        try:
+            fresh = hb.exists() and (_t.time() - hb.stat().st_mtime) < 90
+            if not fresh and not _worker_running():
+                subprocess.Popen([sys.executable, "-u", "worker.py"],
+                                 cwd=str(ROOT),
+                                 creationflags=getattr(subprocess,
+                                                       "CREATE_NO_WINDOW", 0))
+                print("  [watchdog] worker was not alive - restarted it")
+                state.record_error("worker_watchdog", "restarted a dead worker")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            state.record_error("worker_watchdog", e)
+        await asyncio.sleep(60)
+
+
+def _worker_running() -> bool:
+    try:
+        import psutil
+        for p in psutil.process_iter(["cmdline"]):
+            cmd = " ".join(p.info.get("cmdline") or []).lower()
+            if "worker.py" in cmd and "python" in cmd:
+                return True
+    except Exception:
+        return True          # cannot tell -> assume yes, never double-start blindly
+    return False
+
+
 async def watch_broadcaster() -> None:
     """Push the live job list to the HUD whenever it changes.
 
@@ -842,7 +882,8 @@ async def run() -> None:
     runners = [asyncio.create_task(server.serve()),
                asyncio.create_task(telegram_loop()),
                asyncio.create_task(tunnel_keeper()),
-               asyncio.create_task(watch_broadcaster())]
+               asyncio.create_task(watch_broadcaster()),
+               asyncio.create_task(worker_watchdog())]
     if "--no-desk" not in sys.argv:
         runners.append(asyncio.create_task(desk_console()))
     if "--voice" in sys.argv:

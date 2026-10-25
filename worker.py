@@ -736,10 +736,24 @@ def maybe_awareness() -> bool:
         return False
 
 
+HEARTBEAT = ROOT / "data" / "worker.heartbeat"
+
+
+def _beat() -> None:
+    """Prove the worker is alive, so main.py's watchdog can restart it if it
+    dies - otherwise the awareness loop and every job silently stop."""
+    try:
+        HEARTBEAT.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT.write_text(str(time.time()), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def main() -> int:
     log(f"worker up. polling every {TICK_S:.0f}s. db={state.DB_PATH}")
     while True:
         try:
+            _beat()
             tick()
             maybe_brief()
             maybe_awareness()
