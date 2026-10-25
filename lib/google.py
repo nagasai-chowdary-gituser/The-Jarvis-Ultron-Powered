@@ -38,9 +38,24 @@ CREDS_FILE = ROOT / "google_credentials.json"      # the owner drops this in
 TOKEN_FILE = ROOT / "data" / "google_token.json"   # written after consent
 
 
+def _creds_path():
+    """The OAuth client file, under either name. Google downloads it as
+    client_secret_<id>.apps.googleusercontent.com.json, so rather than make the
+    owner rename it, accept that name too."""
+    if CREDS_FILE.exists():
+        return CREDS_FILE
+    for p in sorted(ROOT.glob("client_secret*.json")):
+        return p
+    return None
+
+
 def is_setup() -> bool:
     """True once the owner has connected his Google account."""
     return TOKEN_FILE.exists()
+
+
+def has_credentials() -> bool:
+    return _creds_path() is not None
 
 
 def _creds():
@@ -64,15 +79,17 @@ def _creds():
 
 def setup() -> dict:
     """Run the one-time consent. Opens a browser; saves the token. Desk only."""
-    if not CREDS_FILE.exists():
+    creds_file = _creds_path()
+    if creds_file is None:
         return {"ok": False,
-                "error": f"No google_credentials.json in the Jarvis folder. "
-                         f"Create an OAuth 'Desktop app' client in Google Cloud "
-                         f"(with the Gmail and Calendar APIs enabled), download "
-                         f"its JSON, and save it as {CREDS_FILE.name}."}
+                "error": "No OAuth client file in the Jarvis folder. Create an "
+                         "OAuth 'Desktop app' client in Google Cloud (with the "
+                         "Gmail and Calendar APIs enabled), download its JSON, "
+                         "and save it in the Jarvis folder (either name is fine: "
+                         "google_credentials.json or the client_secret_... one)."}
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
-        flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_FILE), SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(str(creds_file), SCOPES)
         creds = flow.run_local_server(port=0)
         TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")

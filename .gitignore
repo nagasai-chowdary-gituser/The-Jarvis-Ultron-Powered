@@ -57,3 +57,5 @@ scratchpad_*
 google_credentials.json
 google_token.json
 *_token.json
+
+client_secret*.json
