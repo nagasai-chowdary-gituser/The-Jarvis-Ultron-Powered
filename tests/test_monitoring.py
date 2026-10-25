@@ -177,10 +177,28 @@ def test_mission_advances_and_checkpoints(db, monkeypatch):
 
 def test_mission_done_stops_with_report(db, monkeypatch):
     import agent_core
+    import verify
     monkeypatch.setattr(agent_core, "run_turn",
                         lambda *a, **k: "DONE: here is your full report")
+    monkeypatch.setattr(verify, "check", lambda *a, **k: {"ok": True, "gap": ""})
     out = worker.mission(_mission_job())
     assert out["stop"] is True and "report" in out["report"].lower()
+
+
+def test_mission_false_finish_keeps_going(db, monkeypatch):
+    # The model CLAIMS done, but the self-check finds a gap -> the mission must
+    # NOT report success; it checkpoints the gap and carries on.
+    import agent_core
+    import verify
+    monkeypatch.setattr(agent_core, "run_turn",
+                        lambda *a, **k: "DONE: all finished")
+    monkeypatch.setattr(verify, "check",
+                        lambda *a, **k: {"ok": False, "gap": "report not written"})
+    saved = {}
+    monkeypatch.setattr(worker, "_save_params", lambda jid, p: saved.update(p))
+    out = worker.mission(_mission_job())
+    assert out["stop"] is False
+    assert "report not written" in saved.get("progress", "")
 
 
 def test_mission_blocked_stops_honestly(db, monkeypatch):

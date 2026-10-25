@@ -226,3 +226,100 @@ def outcome(task_id: int, *checks: Evidence, db_path=None) -> Evidence:
                    note="the outcome did not check out", error=ev.why,
                    db_path=db_path)
     return ev
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The judgement call — "is the whole GOAL met?", when no os.path.exists() can
+# settle it
+#
+# Everything above checks a concrete, measurable outcome without a model, and
+# that is always preferred: a file either exists or it does not. But some goals
+# are not one file or one exit code - "research X and write me a useful summary",
+# "handle this conversation" - and there the only honest check is whether the
+# RESULT actually answers what was asked. That needs reading comprehension, so
+# it uses the cheap model. It is the backstop the agent loop and a mission reach
+# for AFTER the deterministic checks, never instead of them.
+#
+# It is deliberately CONSERVATIVE (a false "not done" turns a real success into
+# a wasted retry) and it NEVER raises: if the check itself fails, the work
+# stands. A broken checker must never be able to swallow a correct answer.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GOAL_PROMPT = (
+    "You are a strict but fair QA checker for a personal assistant called "
+    "Jarvis. You are given the GOAL the owner asked for, a short log of what "
+    "Jarvis actually DID (tool outcomes), and the REPLY Jarvis is about to "
+    "give. Decide ONE thing: is the goal actually met?\n"
+    "RULES:\n"
+    "- Answer met=false ONLY when there is CLEAR evidence a requested part was "
+    "not done or a step failed. Name that one part in 'gap', in a short "
+    "sentence Jarvis can act on.\n"
+    "- If the goal is a question, met=true when the reply actually answers it.\n"
+    "- Partial is not met: if two of three asked-for things happened, met=false "
+    "and 'gap' names the missing one.\n"
+    "- When you are unsure, answer met=true. Do NOT invent requirements the "
+    "owner did not ask for, and do NOT demand more than was requested.\n"
+    'OUTPUT ONLY JSON: {"met": true|false, "gap": "<empty when met>"}.')
+
+
+def check(goal: str, reply: str, evidence: dict | None = None, *,
+          client=None) -> dict:
+    """Is `goal` actually met by `reply`? Returns {"ok": bool, "gap": str}.
+    Never raises; on ANY failure returns ok=True, so a good reply is never
+    blocked by the checker itself."""
+    import json
+
+    import models
+    import state
+
+    goal = (goal or "").strip()
+    reply = (reply or "").strip()
+    if not goal or not reply:
+        return {"ok": True, "gap": ""}
+    try:
+        from openai import OpenAI
+        c = client or OpenAI(timeout=30, max_retries=1)
+        r = c.responses.create(
+            model=models.BRAIN,
+            instructions=_GOAL_PROMPT,
+            input=[{"role": "user", "content":
+                    f"GOAL:\n{goal[:1200]}\n\n"
+                    f"WHAT JARVIS DID:\n{_evidence_log(evidence)[:1500]}\n\n"
+                    f"REPLY:\n{reply[:1200]}"}],
+            reasoning={"effort": "low"},
+            max_output_tokens=200, store=False)
+        models.record(r, models.BRAIN)
+        raw = (r.output_text or "").strip()
+        a, b = raw.find("{"), raw.rfind("}")
+        obj = json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
+        if bool(obj.get("met", True)):
+            return {"ok": True, "gap": ""}
+        gap = str(obj.get("gap", "")).strip()
+        return {"ok": False, "gap": gap or "part of the request was not completed"}
+    except Exception as e:
+        state.record_error("verify.check", e)
+        return {"ok": True, "gap": ""}         # a broken checker never wins
+
+
+def _evidence_log(evidence: dict | None) -> str:
+    """A short, readable trace of what actually happened this turn, so the
+    checker judges against the machine's real outcomes, not just the prose."""
+    import json
+    if not evidence:
+        return "(no tool activity recorded)"
+    lines = []
+    for r in (evidence.get("results") or [])[-6:]:
+        lines.append("OK: " + _one(r))
+    for f in (evidence.get("failures") or [])[-6:]:
+        lines.append("FAILED: " + _one(f))
+    return "\n".join(lines) or "(no tool activity recorded)"
+
+
+def _one(item) -> str:
+    import json
+    if isinstance(item, dict):
+        for k in ("say", "detail", "note", "report", "stdout", "error"):
+            if item.get(k):
+                return str(item[k])[:160]
+        return json.dumps(item, default=str)[:160]
+    return str(item)[:160]

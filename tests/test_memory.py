@@ -120,3 +120,56 @@ def test_capture_learns_a_preference_from_a_correction(db, monkeypatch):
     block = memory.preferences_block()
     assert "one short sentence" in block.lower()  # the correction became a rule
     assert "whatsapp for work" not in block.lower()  # the fact stayed a fact
+
+
+# ── memory does not pile up contradictions (#gap 3) ───────────────────────────
+
+def test_latest_wording_wins_on_dedup(db):
+    a = memory.remember("Boss wants replies kept to one short line",
+                        kind="preference")
+    b = memory.remember("Boss wants replies kept to one short line always",
+                        kind="preference")
+    assert a == b and memory.count() == 1          # merged, not piled up
+    assert "always" in memory.preferences_block()  # the NEWER wording replaced it
+
+
+def test_forget_preference_removes_only_a_matching_rule(db):
+    memory.remember("Boss wants Priya CC'd on client mail", kind="preference")
+    memory.remember("Boss studies at Saveetha University", kind="fact")
+    assert memory._forget_preference("Boss wants Priya CC'd on client mail") is True
+    assert memory._forget_preference("a rule that was never stored") is False
+    assert memory.count() == 1                     # the fact is untouched
+
+
+def test_capture_supersedes_a_reversed_rule(db, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(memory.models, "record", lambda *a, **k: None)
+    memory.remember("Boss does not want calls before noon",
+                    kind="preference", importance=2.5)
+
+    class FakeResp:
+        output_text = (
+            '{"facts": [],'
+            ' "preferences": ["Boss is fine with calls before noon now"],'
+            ' "supersedes": ["Boss does not want calls before noon"]}')
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.responses = self
+
+        def create(self, **k):
+            return FakeResp()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+
+    memory.capture_turn("actually you can call me before noon from now on",
+                        "got it, boss")
+    for t in threading.enumerate():
+        if t.name == "memory-capture":
+            t.join(timeout=5)
+
+    block = memory.preferences_block().lower()
+    assert "fine with calls before noon" in block        # the new rule is there
+    assert "does not want calls before noon" not in block  # the old one is gone

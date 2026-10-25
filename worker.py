@@ -518,6 +518,18 @@ def mission(job: dict) -> dict:
     low = reply.lower()
     if "done:" in low:
         result = reply[low.index("done:") + 5:].strip() or reply
+        # DON'T take "done" on trust - a long job is exactly where a false
+        # finish hides. Verify against the goal; a real gap turns "done" back
+        # into "more to do" (checkpointed) instead of a wrong success report.
+        import verify
+        v = verify.check(goal, result)
+        if not v["ok"]:
+            params["progress"] = (progress + "\nSELF-CHECK: not done yet - "
+                                  + v["gap"] + "\n" + reply)[-3500:]
+            params["fails"] = 0
+            _save_params(job["id"], params)
+            log(f"mission #{job['id']} claimed done, but gap: {v['gap']}")
+            return {"stop": False}            # keep going, now aimed at the gap
         return {"stop": True, "note": "done",
                 "report": f"Mission done - {goal[:50]}: {result[:400]}"}
     if "blocked:" in low:

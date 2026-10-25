@@ -40,6 +40,7 @@ import threading
 from openai import OpenAI
 
 import brain
+import budget
 import fastpath
 import mcp_client
 import mcp_config
@@ -47,6 +48,7 @@ import memory
 import models
 import safety
 import state
+import verify
 from safety import Blocked, Session, Transport
 
 MAX_ROUNDS_ORCH = 24
@@ -255,12 +257,25 @@ class Agent:
                     "type": "function_call_output", "call_id": fc.call_id,
                     "output": json.dumps(result, default=str)[:TOOL_OUTPUT_LIMIT]})
 
-            # Escalate effort once after a failed round, before giving up -
-            # reasoning is nearly free on luna and a failed retry is not.
+            # RECOVER, don't just retry. First failure: buy more reasoning
+            # (nearly free on luna, and a blind retry is not). Second failure in
+            # a row: a blind third try is the definition of stuck, so force a
+            # REFLECT-AND-REPLAN - name why it is failing and change approach,
+            # not repeat the same call. This is what turns "it kept doing the
+            # broken thing" into a different path.
             if round_failed:
                 failures += 1
                 if failures == 1 and effort != "high":
                     effort = "high"
+                elif failures == 2:
+                    convo.append({"role": "user", "content":
+                        "That approach has now failed twice. Do NOT repeat the "
+                        "same call. In one line say WHY it is failing, then take "
+                        "a DIFFERENT approach - another tool, another specialist, "
+                        "or a changed input. If it truly cannot be done, stop and "
+                        "say so with the reason."})
+            else:
+                failures = 0        # a clean round resets the recovery ladder
         return "I ran as far as I usefully could on that and should hand it back."
 
     def _execute(self, calls, ctx: Ctx, tools: dict) -> list:
@@ -988,6 +1003,49 @@ def _strip_source_tag(text: str) -> str:
     return cleaned or (text or "").strip()
 
 
+def _is_trivial(text: str) -> bool:
+    """A one-liner that needs no checking: the small budget tier. Sizing the
+    gate off budget.for_request keeps 'what needs verifying' in one place."""
+    return budget.for_request(text).deadline_s <= 60.0
+
+
+def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
+                       history: list, instructions: str, emit) -> str:
+    """One self-check, and at most one repair. Returns the final reply.
+
+    Fires only when a tool actually ran (so pure chat and read-only answers the
+    model is confident about are not taxed) and the request is not trivial.
+    verify.check is conservative, so a gap here is a real one; we hand exactly
+    that gap back and let the orchestrator finish it, rather than re-doing the
+    whole task."""
+    did_work = bool(ctx.evidence["results"] or ctx.evidence["failures"])
+    if not did_work or _is_trivial(text):
+        return reply
+    v = verify.check(text, reply, ctx.evidence, client=_client())
+    if v["ok"]:
+        emit({"type": "tool", "name": "verify", "code": "", "why": "checking"})
+        emit({"type": "tool_result", "name": "verify", "ok": True,
+              "detail": "checks out"})
+        return reply
+
+    emit({"type": "tool", "name": "verify", "code": "", "why": v["gap"][:80]})
+    repair = (f"Self-check: you reported this done, but a gap remains - {v['gap']}. "
+              f"Do ONLY that part now with your tools, then give the final reply. "
+              f"If it genuinely cannot be done, say so plainly and why.")
+    seeded = list(history) + [{"role": "user", "content": text},
+                              {"role": "assistant", "content": reply}]
+    try:
+        fixed = team.run(repair, ctx, _client(), history=seeded,
+                         instructions=instructions)
+        fixed = _strip_source_tag(brain.vet(fixed, ctx.evidence) or reply)
+    except Exception as e:
+        state.record_error("agent.repair", e)
+        fixed = reply
+    emit({"type": "tool_result", "name": "verify", "ok": True,
+          "detail": "repaired: " + v["gap"][:120]})
+    return fixed or reply
+
+
 def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
              channel: str = "", user_confirmed: bool = False) -> str:
     """Run one turn through the orchestrator. Never raises."""
@@ -1068,6 +1126,16 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # answers cleanly, it does not prepend "[guess]" to every line. The honesty
     # is already structural (a false claim was caught above, not hidden here).
     reply = _strip_source_tag(reply)
+
+    # CHECK ITS OWN WORK before reporting done. Only on real DOING turns (a
+    # tool actually ran) and never on the trivial tier - a verify pass on a
+    # greeting is wasted money, and a false "not done" turns a real success
+    # into a retry, so verify.check is deliberately conservative. Bounded to
+    # ONE repair: if the check finds a concrete gap, hand that one gap back and
+    # let the orchestrator finish it, then the answer stands. This is the piece
+    # budget.py was always designed around.
+    reply = _verify_and_repair(text, reply, team, ctx, history, instructions, emit)
+
     emit({"type": "reply", "text": reply})
     brain._remember_turn(channel, "out", reply)
     # Learn from the exchange, off the critical path (embeds + stores in a

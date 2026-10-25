@@ -230,6 +230,90 @@ def test_independent_specialists_run_in_parallel(db):
     assert order.index("y-start") < order.index("x-end")
 
 
+# ── recover, don't just retry (#gap 2) ────────────────────────────────────────
+
+def test_repeated_failure_forces_a_replan(db):
+    """Two failed rounds in a row must inject a reflect-and-replan nudge, not a
+    blind third retry of the same call."""
+    def flaky(args, ctx):
+        return {"ok": False, "error": "nope"}
+
+    tool = agent_core.Tool("flaky", "d",
+                           {"type": "object", "properties": {}}, flaky)
+    agent = agent_core.Agent("t", "m", "low", "inst", [tool], 6)
+    script = [_Resp([_FC("flaky", {}, "c1")]),
+              _Resp([_FC("flaky", {}, "c2")]),
+              _Resp([], "stopped cleanly")]
+
+    class Rec(FakeClient):
+        def __init__(self, s):
+            super().__init__(s)
+            self.inputs = []
+
+        def create(self, **k):
+            self.inputs.append(k.get("input"))
+            return super().create(**k)
+
+    client = Rec(script)
+    agent.run("do it", _ctx(), client)
+    assert "DIFFERENT approach" in json.dumps(client.inputs[-1], default=str)
+
+
+# ── check its own work (#gaps 1 & 4) ──────────────────────────────────────────
+
+class _FakeTeam:
+    def __init__(self, reply):
+        self._reply = reply
+        self.ran = []
+
+    def run(self, task, ctx, client, *, history=None, instructions=None):
+        self.ran.append(task)
+        return self._reply
+
+
+def test_verify_repairs_a_real_gap(db, monkeypatch):
+    import verify
+    monkeypatch.setattr(agent_core, "_client", lambda: object())
+    monkeypatch.setattr(verify, "check",
+                        lambda *a, **k: {"ok": False, "gap": "the file was not written"})
+    ctx = _ctx()
+    ctx.evidence["results"].append({"detail": "did a thing"})   # a tool ran
+    team = _FakeTeam("now the file is written")
+    out = agent_core._verify_and_repair(
+        "research the topic and write the summary file", "I researched it.",
+        team, ctx, [], "inst", lambda e: None)
+    assert team.ran and "file is written" in out               # one repair ran
+
+
+def test_verify_passes_clean_work_without_repairing(db, monkeypatch):
+    import verify
+    monkeypatch.setattr(agent_core, "_client", lambda: object())
+    monkeypatch.setattr(verify, "check", lambda *a, **k: {"ok": True, "gap": ""})
+    ctx = _ctx()
+    ctx.evidence["results"].append({"detail": "x"})
+    team = _FakeTeam("SHOULD NOT BE USED")
+    out = agent_core._verify_and_repair(
+        "research X and summarise it", "Here is the summary.",
+        team, ctx, [], "i", lambda e: None)
+    assert out == "Here is the summary." and not team.ran       # no needless redo
+
+
+def test_verify_skips_chat_and_trivial(db, monkeypatch):
+    import verify
+    called = {"n": 0}
+
+    def spy(*a, **k):
+        called["n"] += 1
+        return {"ok": True, "gap": ""}
+
+    monkeypatch.setattr(verify, "check", spy)
+    ctx = _ctx()                                   # no evidence -> no tool ran
+    out = agent_core._verify_and_repair("hi there", "Hello!",
+                                        _FakeTeam("x"), ctx, [], "i",
+                                        lambda e: None)
+    assert out == "Hello!" and called["n"] == 0    # a greeting is never checked
+
+
 def test_run_python_stays_serial(db):
     """run_python is NOT parallelised even if two are requested in one round."""
     agent = agent_core.Agent("o", "m", "low", "i", [agent_core.RUN_PYTHON], 5)

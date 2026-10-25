@@ -121,11 +121,15 @@ def remember(text: str, kind: str = "fact", source: str = "",
     vecs = embed([text])
     vec = vecs[0] if vecs else None
 
-    # Dedup against what is already known, by meaning.
+    # Dedup against what is already known, by meaning. On a hit, the NEWER
+    # wording replaces the stored one (latest wins) - so "keep replies short"
+    # updated to "keep replies to one line" refreshes the rule instead of
+    # leaving the stale phrasing in place. The sharper contradiction case
+    # ("do X" -> "don't X") is handled by the capture pass's supersede list.
     if vec is not None:
         hit = _search_vec(vec, k=1)
         if hit and hit[0]["sim"] >= DEDUP_SIM:
-            _bump(hit[0]["id"], importance)
+            _bump(hit[0]["id"], importance, text=text[:2000])
             return hit[0]["id"]
 
     c = _conn()
@@ -142,15 +146,26 @@ def remember(text: str, kind: str = "fact", source: str = "",
         c.close()
 
 
-def _bump(mem_id: int, importance: float) -> None:
+def _bump(mem_id: int, importance: float, text: str | None = None) -> None:
+    """Reinforce an existing memory: raise its importance and touch it. If a
+    newer wording is given, adopt it (the embedding stays - it is a paraphrase
+    by construction, since this only runs on a dedup hit) and refresh the cache
+    so the new text is what gets recalled and shown."""
     c = _conn()
     try:
-        c.execute("UPDATE memories SET importance = MIN(5.0, importance + ?),"
-                  " last_used = ? WHERE id = ?",
-                  (max(0.1, importance * 0.5), time.time(), mem_id))
+        if text:
+            c.execute("UPDATE memories SET importance = MIN(5.0, importance + ?),"
+                      " last_used = ?, text = ? WHERE id = ?",
+                      (max(0.1, importance * 0.5), time.time(), text, mem_id))
+        else:
+            c.execute("UPDATE memories SET importance = MIN(5.0, importance + ?),"
+                      " last_used = ? WHERE id = ?",
+                      (max(0.1, importance * 0.5), time.time(), mem_id))
         c.commit()
     finally:
         c.close()
+    if text:
+        _invalidate()
 
 
 def forget(mem_id: int) -> None:
@@ -276,8 +291,14 @@ _CAPTURE_PROMPT = (
     "('Boss wants emails kept to 3 lines', 'Boss wants Priya CC'd on client "
     "mail').\n"
     "ONE short, self-contained sentence each. Skip small talk, one-off requests "
-    "and anything already obvious. Output ONLY JSON: "
-    '{"facts": [...], "preferences": [...]}. Empty arrays if none.')
+    "and anything already obvious.\n"
+    "3. SUPERSEDES - if this exchange CHANGES or REVERSES one of the EXISTING "
+    "standing rules shown below, copy that old rule's text VERBATIM into "
+    "'supersedes' so it can be removed (a rule must never sit next to its own "
+    "opposite). Only list a rule you are actually overriding.\n"
+    "Output ONLY JSON: "
+    '{"facts": [...], "preferences": [...], "supersedes": [...]}. '
+    "Empty arrays if none.")
 
 
 def capture_turn(user_text: str, reply: str, source: str = "") -> None:
@@ -296,17 +317,26 @@ def capture_turn(user_text: str, reply: str, source: str = "") -> None:
             if len(ut) < 12:
                 return                      # "hi"/"ok" teaches nothing durable
             from openai import OpenAI
+            # Show the model the rules it already holds, so it can tell a NEW
+            # rule from a CHANGE to an old one and name what to supersede.
+            existing = preferences_block()
             r = OpenAI(timeout=30, max_retries=1).responses.create(
                 model=models.BRAIN,
                 instructions=_CAPTURE_PROMPT,
                 input=[{"role": "user",
-                        "content": f"USER: {ut[:1500]}\nJARVIS: {(reply or '')[:800]}"}],
+                        "content": f"USER: {ut[:1500]}\nJARVIS: "
+                                   f"{(reply or '')[:800]}\n{existing}"}],
                 reasoning={"effort": "low"},
                 max_output_tokens=500, store=False)
             models.record(r, models.BRAIN)
             raw = (r.output_text or "").strip()
             a, b = raw.find("{"), raw.rfind("}")
             obj = json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
+            # Supersede FIRST: drop a rule the Boss has changed, so his new one
+            # does not land next to its own opposite (both would be injected).
+            for old in (obj.get("supersedes") or [])[:4]:
+                if isinstance(old, str):
+                    _forget_preference(old)
             for f in (obj.get("facts") or [])[:6]:
                 if isinstance(f, str) and len(f.strip()) >= 6:
                     remember(f.strip(), kind="fact", source="capture",
@@ -339,3 +369,26 @@ def preferences_block(limit: int = 14) -> str:
     lines = ["", "HOW THE BOSS LIKES THINGS DONE (his standing rules - follow them):"]
     lines += [f"- {r['text']}" for r in rows]
     return "\n".join(lines) + "\n"
+
+
+def _forget_preference(old_text: str) -> bool:
+    """Remove a standing rule the Boss has changed. Matches the text the capture
+    model was shown verbatim (exact first, then a loose contains), among
+    PREFERENCES only - a superseded rule should never take a fact with it."""
+    old = (old_text or "").strip().lower().lstrip("- ")
+    if len(old) < 3:
+        return False
+    c = _conn()
+    try:
+        row = c.execute("SELECT id FROM memories WHERE kind='preference' "
+                        "AND lower(text)=?", (old,)).fetchone()
+        if row is None:
+            row = c.execute("SELECT id FROM memories WHERE kind='preference' "
+                            "AND lower(text) LIKE ? ORDER BY length(text) LIMIT 1",
+                            (f"%{old[:60]}%",)).fetchone()
+    finally:
+        c.close()
+    if row is not None:
+        forget(int(row["id"]))
+        return True
+    return False
