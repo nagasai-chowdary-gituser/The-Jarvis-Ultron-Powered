@@ -15,6 +15,7 @@ BRAIN = "gpt-5.6-luna"              # $0.20 / $0.02 cached / $1.20 per 1M
 BRAIN_HEAVY = "gpt-5.6-terra"       # $2.00 / $0.20 cached / $12.00 per 1M
 REALTIME = "gpt-realtime-mini"      # the phone and desk voice; 0.76s to first word
 VISION = "gpt-5.6-luna"
+VISION_FAST = "gpt-4o-mini"         # eyes: screen/image reading - 5x faster than luna, same accuracy on text
 EMBED = "text-embedding-3-small"    # intelligent memory: semantic recall (1536-dim)
 
 MAX_OUTPUT_TOKENS = 4000
@@ -24,6 +25,7 @@ PRICING = {
     BRAIN:       {"in": 0.20, "cached": 0.02, "out": 1.20},
     BRAIN_HEAVY: {"in": 2.00, "cached": 0.20, "out": 12.00},
     REALTIME:    {"in": 0.60, "cached": 0.06, "out": 2.40},
+    VISION_FAST: {"in": 0.15, "cached": 0.075, "out": 0.60},   # gpt-4o-mini, vision
 }
 
 # Work that needs judgement rather than execution. Measured consequence of

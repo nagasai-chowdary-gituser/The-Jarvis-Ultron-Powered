@@ -689,6 +689,34 @@ SET_CONTROL = _t("set_control",
     ["title", "control", "text"], _desk_call("set_control"))
 
 
+def _see_screen(args, ctx) -> dict:
+    from lib import vision
+    return vision.see_screen(args.get("question", ""), args.get("window", ""))
+
+
+def _see_image(args, ctx) -> dict:
+    from lib import vision
+    return vision.see_image(args.get("path", ""), args.get("question", ""))
+
+
+SEE_SCREEN = _t("see_screen",
+    "LOOK at the screen with your eyes - for anything with no accessibility "
+    "tree: an image, a chart, a design, a game, a video frame, a scanned doc. "
+    "Pass a window title to look at just that window. Ask what you need to "
+    "know. For ordinary app text or web pages, prefer read_window / the browser "
+    "- they are exact and free; use eyes only when there is nothing structured "
+    "to read.",
+    {"question": {"type": "string"},
+     "window": {"type": "string",
+                "description": "part of a window title, or omit for the whole screen"}},
+    [], _see_screen)
+
+SEE_IMAGE = _t("see_image",
+    "Look at an image or a PDF file and answer a question about it.",
+    {"path": {"type": "string"}, "question": {"type": "string"}},
+    ["path"], _see_image)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts
 # ─────────────────────────────────────────────────────────────────────────────
@@ -862,7 +890,7 @@ def build_team(force: bool = False) -> Agent:
     desktop = sub("desktop", "desktop specialist", "desktop",
                   [OPEN_APP, OPEN_CHROME_PROFILE, MEDIA, PROCESSES, STATS,
                    LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
-                   SET_CONTROL])
+                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
@@ -873,7 +901,7 @@ def build_team(force: bool = False) -> Agent:
                   (files, browser, desktop, research, comms, coder)]
     orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB,
                    DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
-                   READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE]
+                   READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN]
 
     # terra at medium: routing and the final answer are where a wrong call
     # shows as dumbness, so this stays smart. The fast path carries the
