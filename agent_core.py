@@ -46,6 +46,7 @@ import mcp_client
 import mcp_config
 import memory
 import models
+import recipes
 import safety
 import state
 import verify
@@ -526,6 +527,34 @@ def _plan(args, ctx) -> dict:
                                 "immediately, without pausing to check in."}
 
 
+def _save_skill(args, ctx) -> dict:
+    """Crystallize a run_python solution that just worked into a named skill, so
+    next time it is one call instead of regenerated code. Rebuilds the team so
+    the new skill is callable immediately."""
+    out = recipes.save_skill(args.get("name", ""), args.get("description", ""),
+                             args.get("code", ""),
+                             phone_safe=bool(args.get("phone_safe")))
+    if out.get("ok"):
+        build_team(force=True)        # pick the new recipe up for the next turn
+        ctx.say({"type": "tool_result", "name": "save_skill", "ok": True,
+                 "detail": f"saved skill '{out['name']}'"})
+    return out
+
+
+def _make_recipe_tool(rec: dict) -> "Tool":
+    """Expose one saved recipe to the orchestrator as a direct callable tool.
+    Routing is semantic: the model picks it by its description."""
+    schema = rec["schema"]
+    name = schema["name"]
+    desc = f"[saved skill] {schema.get('description', '')}"
+    params = schema.get("params") or {"type": "object", "properties": {}}
+
+    def run(args, ctx) -> dict:
+        return recipes.run_skill(rec, args or {})
+
+    return Tool(name, desc, params, run)
+
+
 RUN_PYTHON = _t("run_python",
     "Run Python in a fresh 60s subprocess (lib/ importable, workspace as cwd). "
     "The universal fallback for anything no other tool covers. Print what you "
@@ -533,6 +562,20 @@ RUN_PYTHON = _t("run_python",
     {"code": {"type": "string"},
      "why": {"type": "string", "description": "One line: what this is for."}},
     ["code", "why"], _run_python)
+
+SAVE_SKILL = _t("save_skill",
+    "Crystallize a run_python solution that WORKED into a named, reusable skill, "
+    "so next time the same task is ONE call instead of regenerated code. Do this "
+    "after you solved something non-trivial with run_python and expect it again "
+    "(e.g. 'count my downloads', 'back up today's notes'). Give a lower_snake "
+    "name, a one-line description of what it does, and the exact working code. "
+    "Deletion and eval/exec/subprocess are refused. Leave phone_safe off unless "
+    "it is safe to run from a spoofed phone call.",
+    {"name": {"type": "string"},
+     "description": {"type": "string"},
+     "code": {"type": "string"},
+     "phone_safe": {"type": "boolean"}},
+    ["name", "description", "code"], _save_skill)
 
 REMEMBER = _t("remember",
     "Store a durable fact about the Boss or his world so you know it next time "
@@ -796,7 +839,7 @@ You lead a small team of specialists and you decide who does what. Hand a job to
   research - search the web and read pages
   comms    - WhatsApp and Telegram. It OPENS the app itself, finds the contact safely over the app's own protocol, sends, and verifies. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
   coder    - read/write code and work with GitHub
-For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot.
+For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot. If a saved skill (a tool marked "[saved skill]") already does what is asked, just call it. When run_python solves something non-trivial that the Boss is likely to want again, call save_skill to crystallize it, so next time it is one call.
 
 ROUTING - this is where turns go wrong, so get it right:
 - Messaging ANYONE on WhatsApp or Telegram is ONE comms call, and ONLY comms. comms opens the app itself, so NEVER send "open whatsapp" to desktop as a separate step, and never try to drive a chat app any other way. "open whatsapp and message Kap Cut hi" = one comms call: "send the WhatsApp message 'hi' to Kap Cut".
@@ -963,9 +1006,16 @@ def build_team(force: bool = False) -> Agent:
 
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
-    orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB,
+    orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, REMEMBER, RECALL, SCHEDULE_JOB,
                    DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN]
+    # Crystallized skills become first-class tools - the whole point of saving
+    # one is that next time it is a direct call, routed by its description. A
+    # broken recipe file is skipped (parsed, not imported), never fatal.
+    try:
+        orch_tools += [_make_recipe_tool(r) for r in recipes.all_skills()]
+    except Exception as e:
+        state.record_error("agent.load_recipes", e)
 
     # terra at medium: routing and the final answer are where a wrong call
     # shows as dumbness, so this stays smart. The fast path carries the
