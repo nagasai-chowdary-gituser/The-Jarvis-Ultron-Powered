@@ -55,7 +55,17 @@ LOG = ROOT / "worker.log"
 def log(line: str) -> None:
     stamp = time.strftime("%H:%M:%S")
     msg = f"{stamp} {line}"
-    print(msg, flush=True)
+    # The console may be a cp1252 stream; a ₹, an emoji or a non-Latin name in
+    # a log line would then raise UnicodeEncodeError and - because log() is
+    # called from the awareness/reply paths - take the whole pulse down with it.
+    # Never let a print kill the worker.
+    try:
+        print(msg, flush=True)
+    except Exception:
+        try:
+            print(msg.encode("ascii", "replace").decode(), flush=True)
+        except Exception:
+            pass
     try:
         with LOG.open("a", encoding="utf-8") as fh:
             fh.write(msg + "\n")
@@ -587,12 +597,133 @@ def maybe_brief() -> bool:
     return True
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# The awareness loop — initiative, the thing that makes Jarvis a PA not a tool
+#
+# Every few minutes Jarvis stops and asks itself, like a sharp assistant who is
+# paying attention all day: "given everything I know about the Boss's world
+# right now, is there anything he should be told, or that I should do?" Most of
+# the time the answer is nothing, and it stays quiet. When something genuinely
+# matters - an overdue promise, a conversation that needs his reply, something
+# due today - it tells him, through the SAME cooldown / quiet-hours / daily-cap
+# gate everything else uses, so initiative never becomes noise.
+#
+# It watches only what the owner has already consented to see (his commitments,
+# his running jobs, conversations that changed) - not a background scrape of
+# every chat, which he said he does not want.
+# ─────────────────────────────────────────────────────────────────────────────
+
+AWARENESS_EVERY_S = 10 * 60
+AWARENESS_KEY = "last_awareness_ts"
+AWARENESS_LAST_MSG = "last_awareness_msg"
+
+_AWARENESS_PROMPT = """You are Jarvis, your owner's proactive personal assistant. Below is the state of his world right now. Decide, like a sharp human PA who is paying attention, whether there is anything he should be TOLD or that needs his attention THIS moment.
+
+Surface ONLY what genuinely matters: a commitment that is overdue or due today, a decision only he can make, something clearly time-sensitive, a conversation waiting on his reply, a promise about to be broken. Do NOT surface routine things, anything already handled, or anything you told him recently. Most of the time the right answer is to stay quiet.
+
+Call him (urgent=true) only when it truly cannot wait; otherwise send a quiet message. Speak as a person would, naming who and what.
+
+Output ONLY JSON: {"act": true|false, "urgent": true|false, "message": "<one or two short lines for the Boss, or empty>"}"""
+
+
+def _world_snapshot() -> str:
+    """What Jarvis can see of the Boss's world right now, in a few lines."""
+    lines = [time.strftime("Now: %A %d %B %Y, %H:%M", time.localtime())]
+    try:
+        oc = state.open_commitments()
+    except Exception:
+        oc = []
+    if oc:
+        lines.append("Open commitments:")
+        for c in oc[:10]:
+            who = f" ({c['who']})" if c.get("who") else ""
+            due = f" - due {c['due']}" if c.get("due") else ""
+            lines.append(f"- {c['what'][:120]}{who}{due}")
+    try:
+        jb = state.jobs("pending")
+    except Exception:
+        jb = []
+    if jb:
+        lines.append("Running jobs: "
+                     + ", ".join(f"#{j['id']} {j['kind']}" for j in jb[:8]))
+    try:
+        moved = state.threads_moved_since(time.time() - 6 * 3600)
+    except Exception:
+        moved = []
+    if moved:
+        lines.append("Conversations that changed recently:")
+        for th in moved[:6]:
+            who = th.get("name") or (th.get("jid") or "").split("@")[0]
+            lines.append(f"- {who}: {(th.get('summary') or '')[:120]}")
+    last = state.facts().get(AWARENESS_LAST_MSG) or ""
+    if last:
+        lines.append(f"(You recently told him: {last[:150]})")
+    return "\n".join(lines)
+
+
+def awareness_pulse() -> bool:
+    """One self-check. Returns whether it decided to reach the Boss."""
+    snap = _world_snapshot()
+    # Nothing in his world but the clock -> nothing to reason about, no spend.
+    if snap.count("\n") < 1:
+        return False
+
+    import json as _json
+
+    import models
+    from openai import OpenAI
+    try:
+        r = OpenAI(timeout=30.0, max_retries=1).responses.create(
+            model=models.BRAIN, instructions=_AWARENESS_PROMPT,
+            input=[{"role": "user", "content": snap}],
+            reasoning={"effort": "low"}, max_output_tokens=400, store=False)
+        models.record(r, models.BRAIN)
+        raw = (r.output_text or "").strip()
+    except Exception as e:
+        log(f"awareness model failed: {type(e).__name__}: {e}")
+        return False
+
+    try:
+        a, b = raw.find("{"), raw.rfind("}")
+        obj = _json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
+    except Exception:
+        return False
+    msg = str(obj.get("message", "")).strip()
+    if not (obj.get("act") and msg):
+        return False
+
+    state.set_fact(AWARENESS_LAST_MSG, msg[:200])
+    if obj.get("urgent"):
+        call_boss(msg)                      # call -> Telegram fallback
+    else:
+        tell_boss(msg)                      # quiet msg, through the cooldown gate
+    log(f"awareness -> Boss: {msg[:90]}")
+    return True
+
+
+def maybe_awareness() -> bool:
+    """Run the awareness pulse on its interval. Cheap when idle."""
+    try:
+        last = float(state.facts().get(AWARENESS_KEY) or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if time.time() - last < AWARENESS_EVERY_S:
+        return False
+    state.set_fact(AWARENESS_KEY, f"{time.time():.0f}")
+    try:
+        return awareness_pulse()
+    except Exception as e:
+        log(f"awareness failed: {type(e).__name__}: {e}")
+        return False
+
+
 def main() -> int:
     log(f"worker up. polling every {TICK_S:.0f}s. db={state.DB_PATH}")
     while True:
         try:
             tick()
             maybe_brief()
+            maybe_awareness()
         except KeyboardInterrupt:
             log("worker stopped.")
             return 0

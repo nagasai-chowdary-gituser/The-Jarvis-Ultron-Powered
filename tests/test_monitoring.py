@@ -105,6 +105,58 @@ def test_reply_and_judge_parses_the_models_json(db, monkeypatch):
     assert "money" in alert and "Kapcut" in alert
 
 
+def _fake_openai(monkeypatch, output_text):
+    class FakeResp:
+        pass
+    FakeResp.output_text = output_text
+    FakeResp.usage = None
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.responses = self
+
+        def create(self, **k):
+            return FakeResp()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+
+
+# ── awareness loop (initiative) ───────────────────────────────────────────────
+
+def test_awareness_alerts_when_something_matters(db, monkeypatch):
+    state.add_commitment("call the bank about the overdue payment", due="today")
+    _fake_openai(monkeypatch,
+                 '{"act":true,"urgent":true,'
+                 '"message":"Your payment to the bank is due today."}')
+    calls = []
+    monkeypatch.setattr(worker, "call_boss", lambda m, **k: calls.append(m))
+    monkeypatch.setattr(worker, "tell_boss", lambda m, **k: calls.append(m))
+    assert worker.awareness_pulse() is True
+    assert calls and "due today" in calls[0]
+
+
+def test_awareness_stays_quiet_when_nothing(db, monkeypatch):
+    state.add_commitment("an old handled thing")
+    _fake_openai(monkeypatch, '{"act":false,"urgent":false,"message":""}')
+    calls = []
+    monkeypatch.setattr(worker, "call_boss", lambda m, **k: calls.append(m))
+    monkeypatch.setattr(worker, "tell_boss", lambda m, **k: calls.append(m))
+    assert worker.awareness_pulse() is False
+    assert not calls, "awareness spoke when nothing mattered"
+
+
+def test_awareness_skips_model_when_world_is_empty(db, monkeypatch):
+    # No commitments, jobs or moved threads -> no spend, no model call.
+    class Boom:
+        def __init__(self, *a, **k):
+            raise AssertionError("the model must not be called on an empty world")
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", Boom)
+    assert worker.awareness_pulse() is False
+
+
 def test_reply_and_judge_handles_non_json(db, monkeypatch):
     class FakeResp:
         output_text = "just a plain reply, no json here"
