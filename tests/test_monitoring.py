@@ -157,6 +157,55 @@ def test_awareness_skips_model_when_world_is_empty(db, monkeypatch):
     assert worker.awareness_pulse() is False
 
 
+# ── mission: robust long-running jobs (#3) ───────────────────────────────────
+
+def _mission_job(**params):
+    return {"id": 1, "params": {"goal": "research X deeply", **params},
+            "created_at": 9e9, "until": ""}        # far-future -> never times out
+
+
+def test_mission_advances_and_checkpoints(db, monkeypatch):
+    import agent_core
+    monkeypatch.setattr(agent_core, "run_turn",
+                        lambda *a, **k: "worked. PROGRESS: found three sources")
+    saved = {}
+    monkeypatch.setattr(worker, "_save_params", lambda jid, p: saved.update(p))
+    out = worker.mission(_mission_job())
+    assert out["stop"] is False                    # more to do -> keep going
+    assert "found three sources" in saved.get("progress", "")   # checkpointed
+
+
+def test_mission_done_stops_with_report(db, monkeypatch):
+    import agent_core
+    monkeypatch.setattr(agent_core, "run_turn",
+                        lambda *a, **k: "DONE: here is your full report")
+    out = worker.mission(_mission_job())
+    assert out["stop"] is True and "report" in out["report"].lower()
+
+
+def test_mission_blocked_stops_honestly(db, monkeypatch):
+    import agent_core
+    monkeypatch.setattr(agent_core, "run_turn",
+                        lambda *a, **k: "BLOCKED: I need your login for that site")
+    out = worker.mission(_mission_job())
+    assert out["stop"] is True and "blocked" in out["report"].lower()
+
+
+def test_mission_recovers_then_gives_up(db, monkeypatch):
+    import agent_core
+
+    def boom(*a, **k):
+        raise RuntimeError("api down")
+    monkeypatch.setattr(agent_core, "run_turn", boom)
+    monkeypatch.setattr(worker, "_save_params", lambda jid, p: None)
+    # already failed twice; this third failure must stop and report, not spin.
+    out = worker.mission(_mission_job(fails=2))
+    assert out["stop"] is True and "failed" in out["report"].lower()
+    # a single failure keeps going (recovery, not surrender)
+    out2 = worker.mission(_mission_job(fails=0))
+    assert out2["stop"] is False
+
+
 def test_reply_and_judge_handles_non_json(db, monkeypatch):
     class FakeResp:
         output_text = "just a plain reply, no json here"

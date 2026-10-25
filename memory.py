@@ -265,20 +265,29 @@ def count() -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CAPTURE_PROMPT = (
-    "From this exchange, extract durable facts worth remembering about the USER "
-    "or his world - his name, people, accounts, preferences, projects, "
-    "recurring tasks, decisions. ONE short sentence each, self-contained (not "
-    '"he likes it" but "Boss prefers replies kept to one line"). Skip small '
-    "talk, one-off requests, and anything already obvious. JSON array of "
-    'strings only, e.g. ["Boss\'s college is Saveetha"]. Return [] if nothing.')
+    "From this exchange, extract two things, learning the way a good assistant "
+    "learns his boss:\n"
+    "1. FACTS - durable truths about the user or his world (his name, people, "
+    "accounts, projects, decisions).\n"
+    "2. PREFERENCES - HOW he likes things done, ESPECIALLY any correction he "
+    "made to how Jarvis just did something. If he says 'no, keep it shorter', "
+    "'always CC Priya', 'don't call me before noon', 'I prefer X', 'from now "
+    "on Y', or corrects a mistake, capture the LESSON as a standing rule "
+    "('Boss wants emails kept to 3 lines', 'Boss wants Priya CC'd on client "
+    "mail').\n"
+    "ONE short, self-contained sentence each. Skip small talk, one-off requests "
+    "and anything already obvious. Output ONLY JSON: "
+    '{"facts": [...], "preferences": [...]}. Empty arrays if none.')
 
 
 def capture_turn(user_text: str, reply: str, source: str = "") -> None:
     """Learn from one exchange, off the turn's critical path.
 
-    Runs on a daemon thread: an episodic trace of the request goes in right
-    away, and a cheap model pass pulls out any durable facts. Both embed and
-    store. Failure is swallowed - learning must never cost a reply."""
+    A daemon thread: an episodic trace goes in at once, then a cheap model pass
+    pulls out durable FACTS and PREFERENCES (how the Boss likes things done,
+    including corrections). Preferences are stored heavier and are always
+    applied (preferences_block), so Jarvis gets better at being HIS assistant.
+    Failure is swallowed - learning must never cost a reply."""
     def work() -> None:
         try:
             ut = (user_text or "").strip()
@@ -296,13 +305,37 @@ def capture_turn(user_text: str, reply: str, source: str = "") -> None:
                 max_output_tokens=500, store=False)
             models.record(r, models.BRAIN)
             raw = (r.output_text or "").strip()
-            a, b = raw.find("["), raw.rfind("]")
-            facts = json.loads(raw[a:b + 1]) if a >= 0 <= b else []
-            for f in facts[:6]:
+            a, b = raw.find("{"), raw.rfind("}")
+            obj = json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
+            for f in (obj.get("facts") or [])[:6]:
                 if isinstance(f, str) and len(f.strip()) >= 6:
                     remember(f.strip(), kind="fact", source="capture",
                              importance=1.5)
+            for p in (obj.get("preferences") or [])[:6]:
+                if isinstance(p, str) and len(p.strip()) >= 6:
+                    remember(p.strip(), kind="preference", source="capture",
+                             importance=2.5)        # heavier: a standing rule
         except Exception as e:
             state.record_error("memory.capture", e)
 
     threading.Thread(target=work, daemon=True, name="memory-capture").start()
+
+
+def preferences_block(limit: int = 14) -> str:
+    """Everything Jarvis has learned about HOW the Boss likes things done.
+
+    Unlike recall_block (semantic, per-request), preferences are few and always
+    relevant, so they go into EVERY turn - that is what makes Jarvis follow his
+    standing rules instead of needing to be corrected again."""
+    c = _conn()
+    try:
+        rows = c.execute(
+            "SELECT text FROM memories WHERE kind='preference' "
+            "ORDER BY importance DESC, last_used DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        c.close()
+    if not rows:
+        return ""
+    lines = ["", "HOW THE BOSS LIKES THINGS DONE (his standing rules - follow them):"]
+    lines += [f"- {r['text']}" for r in rows]
+    return "\n".join(lines) + "\n"

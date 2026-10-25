@@ -78,3 +78,45 @@ def test_recall_block_is_prompt_ready(db):
 def test_short_text_is_not_stored(db):
     assert memory.remember("hi") is None
     assert memory.count() == 0
+
+
+# ── preferences: Jarvis learns HOW the Boss likes things done (#2) ─────────────
+
+def test_preferences_block_lists_only_standing_rules(db):
+    memory.remember("Boss wants email replies kept to three short lines",
+                    kind="preference", importance=2.5)
+    memory.remember("Boss studies at Saveetha University", kind="fact")
+    block = memory.preferences_block()
+    assert "three short lines" in block
+    assert "STANDING RULES" in block.upper()      # framed as rules to follow
+    assert "Saveetha" not in block                # a fact is not a standing rule
+
+
+def test_capture_learns_a_preference_from_a_correction(db, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(memory.models, "record", lambda *a, **k: None)
+
+    class FakeResp:
+        output_text = ('{"facts":["Boss uses WhatsApp for work"],'
+                       '"preferences":["Keep replies to one short sentence"]}')
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.responses = self
+
+        def create(self, **k):
+            return FakeResp()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+
+    memory.capture_turn("no, stop giving me paragraphs - one short sentence only",
+                        "got it, boss")
+    for t in threading.enumerate():               # let the capture daemon finish
+        if t.name == "memory-capture":
+            t.join(timeout=5)
+
+    block = memory.preferences_block()
+    assert "one short sentence" in block.lower()  # the correction became a rule
+    assert "whatsapp for work" not in block.lower()  # the fact stayed a fact

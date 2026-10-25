@@ -462,9 +462,88 @@ def agent_task(job: dict) -> dict:
                 "note": f"{type(e).__name__}: {e}"}
 
 
+MISSION_MAX_S = 2 * 3600          # a mission runs at most this long, then reports
+MISSION_RETRIES = 3               # consecutive failed advances before giving up
+
+
+def mission(job: dict) -> dict:
+    """A ROBUST long-running job: a goal pursued over many steps, across hours
+    and across restarts, with checkpointing and recovery.
+
+    This is what agent_task is not. agent_task runs the brain once; a mission
+    runs it REPEATEDLY, each time advancing toward the goal from the progress so
+    far, until it is DONE, it is BLOCKED, a stop condition is met, or the time
+    runs out. "research X deeply and write me a full report", "keep watching Y
+    and handle it until Z", "work through this big list" - all one engine.
+
+    - CHECKPOINT: progress is written to the job row every advance, so a worker
+      restart resumes exactly where it was (the job is still pending).
+    - RECOVER: a failed advance is retried; after MISSION_RETRIES in a row it
+      stops and reports honestly rather than spinning forever. Any real progress
+      resets the counter.
+    - HONEST END: done / blocked / stop-condition / out-of-time each end it with
+      a clear report, never a silent stall."""
+    import agent_core
+    params = job["params"]
+    goal = (params.get("goal") or params.get("request") or "").strip()
+    if not goal:
+        return {"stop": True, "note": "mission had no goal"}
+    progress = params.get("progress", "")
+    fails = int(params.get("fails", 0))
+    until = (job.get("until") or "").strip()
+
+    prompt = (
+        f"MISSION GOAL: {goal}\n\n"
+        f"PROGRESS SO FAR:\n{progress or '(nothing yet - just starting)'}\n\n"
+        "Advance the mission now: do the next useful steps toward the goal with "
+        "your tools. Then end your reply with exactly one tag:\n"
+        "  DONE: <the result / deliverable> - if the goal is fully achieved.\n"
+        "  BLOCKED: <why, and what you need> - if you cannot continue.\n"
+        "  PROGRESS: <what you advanced this step> - if there is more to do.")
+
+    try:
+        reply = agent_core.run_turn(prompt, Transport.WORKER,
+                                    channel=f"chan:mission:{job['id']}")
+    except Exception as e:
+        fails += 1
+        params["fails"] = fails
+        _save_params(job["id"], params)
+        log(f"mission #{job['id']} advance failed ({fails}): {e}")
+        if fails >= MISSION_RETRIES:
+            return {"stop": True, "note": f"{type(e).__name__}: {e}",
+                    "report": f"I had to stop the mission '{goal[:70]}' - it "
+                              f"failed {fails} times. Latest: {type(e).__name__}."}
+        return {"stop": False}               # retry next tick
+
+    low = reply.lower()
+    if "done:" in low:
+        result = reply[low.index("done:") + 5:].strip() or reply
+        return {"stop": True, "note": "done",
+                "report": f"Mission done - {goal[:50]}: {result[:400]}"}
+    if "blocked:" in low:
+        why = reply[low.index("blocked:") + 8:].strip() or reply
+        return {"stop": True, "note": "blocked",
+                "report": f"I'm blocked on '{goal[:50]}': {why[:300]}"}
+
+    # Progress: checkpoint it, reset the failure counter, keep going.
+    params["progress"] = (progress + "\n" + reply)[-3500:]
+    params["fails"] = 0
+    _save_params(job["id"], params)
+
+    if until and _until_met(until, reply):
+        return {"stop": True, "note": "stop condition met",
+                "report": f"Mission '{goal[:50]}' reached its stop condition: "
+                          f"{reply[:200]}"}
+    if time.time() - (job.get("created_at") or 0) > MISSION_MAX_S:
+        return {"stop": True, "note": "out of time",
+                "report": f"I ran the full time on '{goal[:50]}'. Where it got "
+                          f"to: {reply[:250]}"}
+    return {"stop": False}                    # advance again next tick
+
+
 KINDS = {"watch_chat": watch_chat, "reminder": reminder,
          "poll_url": poll_url, "check_process": check_process,
-         "agent_task": agent_task}
+         "agent_task": agent_task, "mission": mission}
 
 # MONITORS ARE READ-ONLY, AND THAT IS STRUCTURAL RATHER THAN A RULE.
 #

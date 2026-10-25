@@ -407,9 +407,10 @@ def _web_fetch(args, ctx) -> dict:
 
 def _schedule_job(args, ctx) -> dict:
     kind = args.get("kind", "")
-    # A watched chat must reply quickly, so default it to a short interval
-    # unless the caller set one. Other kinds keep their given/60s cadence.
-    default_every = 5 if kind == "watch_chat" else 60
+    # A watched chat must reply quickly and a mission should advance steadily,
+    # so both default to a short interval unless the caller set one. Other
+    # kinds keep their given/60s cadence.
+    default_every = {"watch_chat": 5, "mission": 10}.get(kind, 60)
     jid = state.add_job(kind, args.get("params") or {},
                         args.get("every_seconds") or default_every,
                         args.get("until"))
@@ -613,14 +614,16 @@ CALENDAR_CREATE = _t("calendar_create",
 SCHEDULE_JOB = _t("schedule_job",
     "Hand work to the background worker. Returns a job id immediately. The ONLY "
     "way to do anything that waits or runs after this turn ends. kinds: "
-    "agent_task (params.request - a WHOLE job to carry out in the background "
-    "with the full brain, e.g. 'research X and message me a summary'; it runs "
-    "once and reports), watch_chat (params.contact), reminder (params.text), "
-    "poll_url (params.url), check_process (params.name). params.urgency='call' "
-    "rings the Boss instead of messaging.",
+    "mission (params.goal - a BIG, long-running job pursued over many steps for "
+    "up to hours, with checkpointing and recovery, e.g. 'research X deeply and "
+    "write me a full report' or 'keep handling Y until Z'; set `until` for a "
+    "stop condition), agent_task (params.request - a smaller job run ONCE and "
+    "reported), watch_chat (params.contact), reminder (params.text), poll_url "
+    "(params.url), check_process (params.name). params.urgency='call' rings the "
+    "Boss instead of messaging.",
     {"kind": {"type": "string",
-              "enum": ["agent_task", "watch_chat", "reminder", "poll_url",
-                       "check_process"]},
+              "enum": ["mission", "agent_task", "watch_chat", "reminder",
+                       "poll_url", "check_process"]},
      "params": {"type": "object"},
      "every_seconds": {"type": "integer"},
      "until": {"type": "string"}},
@@ -1053,6 +1056,7 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # meaning, not recency) into the prompt, so the brain answers from what it
     # actually knows rather than only the last few lines.
     instructions = (team.instructions + state.facts_block()
+                    + memory.preferences_block()        # how he likes things done
                     + memory.recall_block(text)
                     + (state.as_context(jid) if jid else ""))
     reply = team.run(text, ctx, _client(), history=history,
