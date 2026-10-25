@@ -36,6 +36,14 @@ import time
 # Patterns. Each returns (handler, kwargs) or None.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# A SPECIFIC Chrome profile - checked before _OPEN, or "open my 5th profile"
+# would be read as "open an app called 'my 5th profile'". Captures the profile
+# reference ("main", "5th", "rudrxai") before the word "profile".
+_CHROME_PROFILE = re.compile(
+    r"^(?:please\s+)?(?:open|launch|switch\s+to|go\s+to)\s+(?:my\s+|the\s+)?"
+    r"(?P<which>.+?)\s+(?:chrome\s+|google\s+)?profile"
+    r"(?:\s+(?:in\s+)?(?:chrome(?:\s+app)?|the\s+chrome\s+app))?\s*$", re.I)
+
 _OPEN = re.compile(
     r"^(?:please\s+)?(?:can\s+you\s+)?(?:just\s+)?"
     r"(?:open|launch|start|run)\s+"
@@ -79,6 +87,18 @@ def _do_open(app: str) -> dict:
     from lib import desktop
     r = desktop.open_app(app)
     return {"ok": True, "say": f"{r['launched']} is open.", "evidence": r}
+
+
+def _do_chrome_profile(which: str) -> dict:
+    from lib import desktop
+    r = desktop.open_chrome_profile(which)
+    if not r.get("ok"):
+        # Ambiguous or unreadable -> let the model handle it (it can list them).
+        raise ValueError(r.get("error", "no matching profile"))
+    name = r.get("opened") or which
+    email = r.get("email")
+    say = f"Opened your {name} profile in Chrome" + (f" ({email})." if email else ".")
+    return {"ok": True, "say": say, "evidence": r}
 
 
 def _do_media(action: str) -> dict:
@@ -138,6 +158,7 @@ _ROUTES = (
     (_APPS, _do_apps, None),
     (_RUNNING, _do_running, None),
     (_MEDIA, _do_media, "action"),
+    (_CHROME_PROFILE, _do_chrome_profile, "which"),   # BEFORE _OPEN
     (_OPEN, _do_open, "app"),
 )
 

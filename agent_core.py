@@ -555,6 +555,13 @@ OPEN_APP = _t("open_app", "Launch an app by name.",
     {"name": {"type": "string"}}, ["name"],
     _desktop(lambda d, a: d.open_app(a.get("name", ""))))
 
+OPEN_CHROME_PROFILE = _t("open_chrome_profile",
+    "Open the Boss's REAL Chrome in a SPECIFIC profile (he has many Google "
+    "accounts). 'which' can be 'main', an ordinal by picker order ('2nd', "
+    "'fifth', '5'), or part of the account name or email ('rudrxai'). If it "
+    "cannot tell which, the result lists the profiles - show them and ask.",
+    {"which": {"type": "string"}}, ["which"], _desk_call("open_chrome_profile"))
+
 MEDIA = _t("media", "Media keys: play|pause|next|previous|volumeup|volumedown|mute.",
     {"action": {"type": "string"}}, ["action"],
     _desktop(lambda d, a: d.media(a.get("action", ""))))
@@ -766,8 +773,9 @@ def build_team(force: bool = False) -> Agent:
     files = sub("files", "files specialist", "files", [])
     browser = sub("browser", "browser specialist", "browser", [ENSURE_BROWSER])
     desktop = sub("desktop", "desktop specialist", "desktop",
-                  [OPEN_APP, MEDIA, PROCESSES, STATS, LIST_WINDOWS,
-                   READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE, SET_CONTROL])
+                  [OPEN_APP, OPEN_CHROME_PROFILE, MEDIA, PROCESSES, STATS,
+                   LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
+                   SET_CONTROL])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH])
     comms = sub("comms", "communications specialist", "comms",

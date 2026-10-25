@@ -461,3 +461,119 @@ def click_sequence(title: str, controls: list, delay: float = 0.12) -> dict:
             return {"ok": False, "clicked": done,
                     "error": f"{name}: {type(e).__name__}: {e}"}
     return {"ok": True, "clicked": done}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chrome profiles — open a SPECIFIC one (the owner has many Google accounts).
+#
+# "open my 5th profile" used to land on Guest because nothing mapped the request
+# to a profile directory. Chrome stores profiles as "Default", "Profile 47",
+# "Profile 48" ... - the numbers are historical and do NOT match the order the
+# owner sees in the profile picker. The picker order lives in Local State's
+# "profiles_order", and each directory's account name/email is in
+# "profile.info_cache". So this reads both, resolves a request - "main", an
+# ordinal, or a name/email - to the right directory, and launches Chrome with
+# --profile-directory. It drives the owner's REAL Chrome (default user-data-dir),
+# not Jarvis's automation profile.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CHROME_PATHS = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+]
+_ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
+    "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
+    "twelfth": 12,
+}
+
+
+def _chrome_exe() -> str | None:
+    import os as _os
+    for p in _CHROME_PATHS + [_os.path.expandvars(
+            r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")]:
+        if _os.path.isfile(p):
+            return p
+    return None
+
+
+def chrome_profiles() -> list[dict]:
+    """Every Chrome profile the owner has, IN PICKER ORDER: [{pos, dir, name, email}]."""
+    import json
+    import os as _os
+    ls = _os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Local State")
+    try:
+        d = json.load(open(ls, encoding="utf-8"))
+    except Exception as e:
+        return []
+    prof = d.get("profile", {}) or {}
+    cache = prof.get("info_cache", {}) or {}
+    order = prof.get("profiles_order") or sorted(cache)
+    seen, out = set(), []
+    for dirn in order:
+        if dirn in cache and dirn not in seen:
+            seen.add(dirn)
+            info = cache[dirn]
+            out.append({"dir": dirn, "name": info.get("name", "") or dirn,
+                        "email": info.get("user_name", "") or ""})
+    for dirn, info in cache.items():              # any not listed in order
+        if dirn not in seen:
+            out.append({"dir": dirn, "name": info.get("name", "") or dirn,
+                        "email": info.get("user_name", "") or ""})
+    for i, p in enumerate(out):
+        p["pos"] = i + 1
+    return out
+
+
+def _match_profile(which: str, profs: list[dict]) -> dict | None:
+    import re
+    w = (which or "").strip().lower()
+    if not w or not profs:
+        return None
+    if any(k in w for k in ("main", "primary", "default", "first", "1st")):
+        return profs[0]
+    # an ordinal: a digit anywhere, or an ordinal word
+    n = None
+    m = re.search(r"\d+", w)
+    if m:
+        n = int(m.group())
+    else:
+        n = next((v for k, v in _ORDINAL_WORDS.items() if k in w), None)
+    if n and 1 <= n <= len(profs):
+        return profs[n - 1]
+    # name or email substring (most precise - "open my rudrxai profile")
+    for p in profs:
+        if w in p["name"].lower() or w in p["email"].lower():
+            return p
+    # a bare token that appears in an email local-part
+    for p in profs:
+        if any(w in part for part in p["email"].lower().split("@")):
+            return p
+    return None
+
+
+def open_chrome_profile(which: str) -> dict:
+    """Open the owner's REAL Chrome in a specific profile, by position/name/email.
+
+    `which` may be "main", an ordinal ("2nd", "fifth", "5", "profile 5"), or any
+    part of the account name or email. Returns the profile it opened so the
+    answer can name it, or the full list when it cannot tell which was meant."""
+    profs = chrome_profiles()
+    if not profs:
+        return {"ok": False, "error": "could not read your Chrome profiles"}
+    target = _match_profile(which, profs)
+    if target is None:
+        return {"ok": False,
+                "error": f"I could not tell which profile {which!r} means",
+                "profiles": [f"{p['pos']}. {p['name']} ({p['email']})"
+                             for p in profs]}
+    exe = _chrome_exe()
+    if not exe:
+        return {"ok": False, "error": "Chrome was not found in the usual place"}
+    try:
+        subprocess.Popen([exe, f"--profile-directory={target['dir']}"],
+                         creationflags=NO_WINDOW)
+        return {"ok": True, "opened": target["name"], "email": target["email"],
+                "position": target["pos"], "dir": target["dir"]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
