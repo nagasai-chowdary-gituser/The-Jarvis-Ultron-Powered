@@ -229,9 +229,28 @@ class Agent:
         effort = self.effort
         failures = 0
 
-        for _ in range(self.max_rounds):
+        # THE GOVERNOR. A turn ends on a REASON that is true about the work -
+        # finished, blocked, out of time, going in circles, or the runaway
+        # ceiling - never on a bare step count (budget.py exists to undo that
+        # bug). Sized from the request, but never below this agent's own round
+        # allowance, so a specialist handed a big job is not rationed to a
+        # chat-sized budget.
+        b = budget.for_request(task)
+        b.runaway_rounds = max(b.runaway_rounds, self.max_rounds)
+        b.runaway_actions = max(b.runaway_actions, safety.RUNAWAY_TOOL_CALLS)
+
+        while True:
+            verdict = b.verdict()
+            if verdict.terminal:
+                return (b.explain(verdict)
+                        or "I ran as far as I usefully could and should hand "
+                           "this back.")
+            # The cross-agent ceiling: the orchestrator and every specialist it
+            # calls share one session, so this guards the whole turn, not just
+            # this loop.
             if ctx.session.calls >= safety.RUNAWAY_TOOL_CALLS:
                 return "I hit my runaway ceiling - that is a loop on my side."
+            b.round_started()
             try:
                 resp = client.responses.create(
                     model=self.model, instructions=instr,
@@ -248,15 +267,35 @@ class Agent:
             calls = [o for o in resp.output
                      if getattr(o, "type", None) == "function_call"]
             if not calls:
-                return (resp.output_text or "").strip()
+                return (resp.output_text or "").strip()   # the model is done
 
             round_failed = False
+            made_progress = False
             for fc, result in self._execute(calls, ctx, tools):
-                if not result.get("ok"):
+                ok = bool(result.get("ok"))
+                b.did(productive=ok)
+                try:
+                    args = json.loads(fc.arguments or "{}")
+                except Exception:
+                    args = {}
+                # A loop is the SAME call with the SAME outcome, not just a
+                # repeat: polling that returns something new is fine.
+                outcome = "ok" if ok else str(
+                    result.get("error") or result.get("status") or "fail")[:40]
+                looped = b.loops.looping(fc.name, args, outcome)
+                b.loops.note(fc.name, args, outcome)
+                if ok and not looped:
+                    if b.progress.record("state_change", fc.name):
+                        made_progress = True
+                if not ok:
                     round_failed = True
+                    b.recovered()
                 convo.append({
                     "type": "function_call_output", "call_id": fc.call_id,
                     "output": json.dumps(result, default=str)[:TOOL_OUTPUT_LIMIT]})
+
+            if not made_progress:
+                b.progress.barren_round()   # a whole round, nothing changed
 
             # RECOVER, don't just retry. First failure: buy more reasoning
             # (nearly free on luna, and a blind retry is not). Second failure in
@@ -277,7 +316,6 @@ class Agent:
                         "say so with the reason."})
             else:
                 failures = 0        # a clean round resets the recovery ladder
-        return "I ran as far as I usefully could on that and should hand it back."
 
     def _execute(self, calls, ctx: Ctx, tools: dict) -> list:
         """Run this round's tool calls, in parallel when they are independent.
@@ -555,6 +593,51 @@ def _make_recipe_tool(rec: dict) -> "Tool":
     return Tool(name, desc, params, run)
 
 
+def _verify_outcome(args, ctx) -> dict:
+    """PROVE a claimed outcome against the real world, with no model in the
+    loop - a file is there and big enough, a process is running, a command
+    exited zero. verify.py decides; this just routes. Returns the Evidence as a
+    dict (ok + why + what was found), so the model reports what was MEASURED."""
+    kind = (args.get("kind") or "").strip()
+    target = (args.get("target") or "").strip()
+    try:
+        if kind == "file":
+            ev = verify.file_exists(target, int(args.get("min_bytes") or 1),
+                                    args.get("suffix") or "")
+        elif kind == "file_contains":
+            ev = verify.file_contains(target, args.get("contains") or "")
+        elif kind == "dir":
+            ev = verify.dir_has(target, int(args.get("count") or 1),
+                                args.get("pattern") or "*")
+        elif kind == "process":
+            ev = verify.process_running(target, float(args.get("timeout") or 0))
+        else:
+            return {"ok": False, "error": f"unknown verify kind {kind!r}; use "
+                    "file, file_contains, dir or process"}
+        out = ev.as_dict()
+        out["ok"] = ev.ok
+        return out
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+VERIFY_OUTCOME = _t("verify_outcome",
+    "PROVE an outcome against the real world, without a model - use this to back "
+    "a claim instead of asserting it. kinds: file (target=path; optional "
+    "min_bytes, suffix like '.pdf' - a 0-byte or wrong-type file FAILS), "
+    "file_contains (target=path, contains=text), dir (target=path, optional "
+    "count, pattern), process (target=name or pid). Returns what was actually "
+    "found. If you say you downloaded/created a file or started something, "
+    "confirm it here first.",
+    {"kind": {"type": "string",
+              "enum": ["file", "file_contains", "dir", "process"]},
+     "target": {"type": "string"},
+     "min_bytes": {"type": "integer"}, "suffix": {"type": "string"},
+     "contains": {"type": "string"}, "count": {"type": "integer"},
+     "pattern": {"type": "string"}, "timeout": {"type": "number"}},
+    ["kind", "target"], _verify_outcome)
+
+
 RUN_PYTHON = _t("run_python",
     "Run Python in a fresh 60s subprocess (lib/ importable, workspace as cwd). "
     "The universal fallback for anything no other tool covers. Print what you "
@@ -824,7 +907,8 @@ SEE_IMAGE = _t("see_image",
 _IDENTITY = """You are Jarvis, a personal agent on your owner's own Windows machine. He is the only person you take instructions from, and you call him Boss. You are Jarvis - never ChatGPT, never Claude, never "an assistant helping a friend"; if asked who you are, you are Jarvis. Never name the model you run on."""
 
 _HONESTY = """WHAT COUNTS AS TRUE
-Say what a tool RETURNED, never what you intended. A message is sent when the send returned an id; a file exists when the write returned its size. If a tool failed, say it failed and why. If you did not read something, you do not know it. Never say you are monitoring or watching unless schedule_job returned an id THIS turn. The database word "pending" means a job is ACTIVE and queued, not broken - do not tell the Boss an active job is dead."""
+Say what a tool RETURNED, never what you intended. A message is sent when the send returned an id; a file exists when the write returned its size. If a tool failed, say it failed and why. If you did not read something, you do not know it. Never say you are monitoring or watching unless schedule_job returned an id THIS turn. The database word "pending" means a job is ACTIVE and queued, not broken - do not tell the Boss an active job is dead.
+MEASURE, DON'T ASSERT. Before you claim you downloaded or created a file, that something is running, or that a command succeeded, PROVE it with verify_outcome and report what it actually found - a file that is missing, empty, or the wrong type has NOT been produced. Do not report such an outcome done on the strength of a tool you hoped worked."""
 
 ORCH_PROMPT = _IDENTITY + """
 
@@ -997,24 +1081,24 @@ def build_team(force: bool = False) -> Agent:
                      [RUN_PYTHON] + extra_tools, MAX_ROUNDS_SUB,
                      mcp_groups=[group])
 
-    files = sub("files", "files specialist", "files", [])
+    files = sub("files", "files specialist", "files", [VERIFY_OUTCOME])
     browser = sub("browser", "browser specialist", "browser",
-                  [ENSURE_BROWSER, SETUP_LOGIN])
+                  [ENSURE_BROWSER, SETUP_LOGIN, VERIFY_OUTCOME])
     desktop = sub("desktop", "desktop specialist", "desktop",
                   [OPEN_APP, OPEN_CHROME_PROFILE, MEDIA, PROCESSES, STATS,
                    LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
-                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE])
+                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE, VERIFY_OUTCOME])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
                 [WHATSAPP_SEND, MESSAGE_BOSS, EMAIL_DRAFT, EMAIL_SEND,
                  CALENDAR_CREATE, READ_EMAIL, READ_CALENDAR])
-    coder = sub("coder", "coding specialist", "coder", [])
+    coder = sub("coder", "coding specialist", "coder", [VERIFY_OUTCOME])
 
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
-    orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, REMEMBER, RECALL, SCHEDULE_JOB,
-                   DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
+    orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, REMEMBER,
+                   RECALL, SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN]
     # Crystallized skills become first-class tools - the whole point of saving
     # one is that next time it is a direct call, routed by its description. A

@@ -21,6 +21,8 @@ import worker  # noqa: E402
 def db(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "DB_PATH", tmp_path / "m.db")
     monkeypatch.setattr(state, "_ready", set(), raising=False)
+    import tasks
+    tasks.reset_for_tests()          # tasks share state's DB; re-apply schema here
     return tmp_path
 
 
@@ -255,6 +257,44 @@ def test_mission_recovers_then_gives_up(db, monkeypatch):
     # a single failure keeps going (recovery, not surrender)
     out2 = worker.mission(_mission_job(fails=0))
     assert out2["stop"] is False
+
+
+def test_mission_is_a_task_and_records_completion(db, monkeypatch):
+    import agent_core
+    import tasks
+    import verify
+    monkeypatch.setattr(agent_core, "run_turn", lambda *a, **k: "DONE: all set")
+    monkeypatch.setattr(verify, "check", lambda *a, **k: {"ok": True, "gap": ""})
+    job = _mission_job()
+    out = worker.mission(job)
+    assert out["stop"] is True
+    tid = job["params"].get("task_id")
+    assert tid and tasks.get(tid)["state"] is tasks.State.COMPLETED
+
+
+def test_a_cancelled_mission_stops(db, monkeypatch):
+    import agent_core
+    import tasks
+    monkeypatch.setattr(agent_core, "run_turn", lambda *a, **k: "PROGRESS: working")
+    job = _mission_job()
+    worker.mission(job)                       # first advance -> creates the task
+    tid = job["params"]["task_id"]
+    tasks.cancel(tid, "owner said stop")      # the owner cancels it
+    out = worker.mission(job)                 # next tick must notice and stop
+    assert out["stop"] is True and "cancel" in out["report"].lower()
+    assert tasks.get(tid)["state"] is tasks.State.CANCELLED
+
+
+def test_mission_blocked_escalates_the_task(db, monkeypatch):
+    import agent_core
+    import tasks
+    monkeypatch.setattr(agent_core, "run_turn",
+                        lambda *a, **k: "BLOCKED: I need your login")
+    job = _mission_job()
+    out = worker.mission(job)
+    tid = job["params"].get("task_id")
+    assert out["stop"] is True
+    assert tasks.get(tid)["state"] is tasks.State.ESCALATED   # needs the owner
 
 
 def test_reply_and_judge_handles_non_json(db, monkeypatch):

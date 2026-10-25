@@ -466,6 +466,68 @@ MISSION_MAX_S = 2 * 3600          # a mission runs at most this long, then repor
 MISSION_RETRIES = 3               # consecutive failed advances before giving up
 
 
+# ── a mission IS a task (lifecycle, cancellation, recorded completion) ────────
+# All best-effort and guarded: the task store is for tracking, and a quirk in it
+# must never be able to break a running mission.
+
+def _tasks():
+    import tasks
+    return tasks
+
+
+def _mission_task(job: dict, goal: str) -> int | None:
+    """Create the task row on the first advance (and remember its id on the job),
+    or return the existing one. Returns None if the store is unavailable."""
+    params = job["params"]
+    if params.get("task_id"):
+        return int(params["task_id"])
+    try:
+        tasks = _tasks()
+        tid = tasks.create(goal, transport="worker")
+        tasks.move(tid, tasks.State.PLANNING)
+        tasks.move(tid, tasks.State.EXECUTING)
+        params["task_id"] = tid
+        _save_params(job["id"], params)
+        return tid
+    except Exception as e:
+        log(f"mission #{job['id']} task create failed: {type(e).__name__}: {e}")
+        return None
+
+
+def _task_cancelled(tid: int | None) -> bool:
+    if not tid:
+        return False
+    try:
+        return bool(_tasks().cancel_requested(tid))
+    except Exception:
+        return False
+
+
+def _task_end(tid: int | None, target, note: str = "") -> None:
+    """Drive the task to a terminal state by a LEGAL path, swallowing anything
+    that goes wrong. COMPLETED must pass through VERIFYING (a task only completes
+    via verification); the others are legal straight from a running state."""
+    if not tid:
+        return
+    try:
+        tasks = _tasks()
+        t = tasks.get(tid)
+        if t is None or t["state"].terminal:
+            return
+        State = tasks.State
+        if target is State.COMPLETED:
+            if t["state"] is State.EXECUTING:
+                tasks.move(tid, State.OBSERVING)
+            cur = tasks.get(tid)["state"]
+            if cur in (State.OBSERVING, State.RECOVERING):
+                tasks.move(tid, State.VERIFYING)
+            tasks.move(tid, State.COMPLETED, note=note[:200])
+        else:
+            tasks.move(tid, target, note=note[:200])
+    except Exception as e:
+        log(f"mission #{tid} task end -> {target}: {type(e).__name__}: {e}")
+
+
 def mission(job: dict) -> dict:
     """A ROBUST long-running job: a goal pursued over many steps, across hours
     and across restarts, with checkpointing and recovery.
@@ -492,11 +554,24 @@ def mission(job: dict) -> dict:
     fails = int(params.get("fails", 0))
     until = (job.get("until") or "").strip()
 
+    # A mission IS a task: it gets a row in the task state machine, so it is
+    # cancellable, its lifecycle is tracked, and completion is RECORDED. All of
+    # it is best-effort and guarded - a task-store quirk must never break a
+    # running mission.
+    tid = _mission_task(job, goal)
+    if _task_cancelled(tid):
+        _task_end(tid, _tasks().State.CANCELLED, "cancelled by owner")
+        return {"stop": True, "note": "cancelled",
+                "report": f"I stopped the mission '{goal[:60]}' - it was cancelled."}
+
     prompt = (
         f"MISSION GOAL: {goal}\n\n"
         f"PROGRESS SO FAR:\n{progress or '(nothing yet - just starting)'}\n\n"
         "Advance the mission now: do the next useful steps toward the goal with "
-        "your tools. Then end your reply with exactly one tag:\n"
+        "your tools. If this step produced a file, a download or a running "
+        "process, PROVE it with verify_outcome before you call it done - a "
+        "missing, empty or wrong-type file is NOT done. Then end your reply with "
+        "exactly one tag:\n"
         "  DONE: <the result / deliverable> - if the goal is fully achieved.\n"
         "  BLOCKED: <why, and what you need> - if you cannot continue.\n"
         "  PROGRESS: <what you advanced this step> - if there is more to do.")
@@ -510,6 +585,7 @@ def mission(job: dict) -> dict:
         _save_params(job["id"], params)
         log(f"mission #{job['id']} advance failed ({fails}): {e}")
         if fails >= MISSION_RETRIES:
+            _task_end(tid, _tasks().State.FAILED, f"{type(e).__name__} x{fails}")
             return {"stop": True, "note": f"{type(e).__name__}: {e}",
                     "report": f"I had to stop the mission '{goal[:70]}' - it "
                               f"failed {fails} times. Latest: {type(e).__name__}."}
@@ -530,10 +606,14 @@ def mission(job: dict) -> dict:
             _save_params(job["id"], params)
             log(f"mission #{job['id']} claimed done, but gap: {v['gap']}")
             return {"stop": False}            # keep going, now aimed at the gap
+        _task_end(tid, _tasks().State.COMPLETED, result[:200])
         return {"stop": True, "note": "done",
                 "report": f"Mission done - {goal[:50]}: {result[:400]}"}
     if "blocked:" in low:
         why = reply[low.index("blocked:") + 8:].strip() or reply
+        # Blocked is not failure - it is an answer that needs the owner. ESCALATED
+        # is the task state for exactly that.
+        _task_end(tid, _tasks().State.ESCALATED, why[:200])
         return {"stop": True, "note": "blocked",
                 "report": f"I'm blocked on '{goal[:50]}': {why[:300]}"}
 
@@ -543,10 +623,12 @@ def mission(job: dict) -> dict:
     _save_params(job["id"], params)
 
     if until and _until_met(until, reply):
+        _task_end(tid, _tasks().State.COMPLETED, "stop condition met")
         return {"stop": True, "note": "stop condition met",
                 "report": f"Mission '{goal[:50]}' reached its stop condition: "
                           f"{reply[:200]}"}
     if time.time() - (job.get("created_at") or 0) > MISSION_MAX_S:
+        _task_end(tid, _tasks().State.FAILED, "out of time")
         return {"stop": True, "note": "out of time",
                 "report": f"I ran the full time on '{goal[:50]}'. Where it got "
                           f"to: {reply[:250]}"}
