@@ -55,6 +55,18 @@ _MEDIA = re.compile(
     r"volume\s*up|volume\s*down|mute|unmute)"
     r"(?:\s+(?:the\s+)?(?:music|song|track|video|media))?$", re.I)
 
+# "set up my browser login" - open Jarvis's Chrome for a one-time sign-in.
+_LOGIN_SETUP = re.compile(
+    r"^(?:set\s*up|setup|configure|fix)\s+(?:my\s+|the\s+)?"
+    r"(?:browser|chrome|jarvis(?:'s)?)?\s*(?:browser\s+)?login(?:s)?$", re.I)
+
+# Job management - "delete all jobs", "stop and remove all jobs", "delete job 10".
+_JOBS_DELETE_ALL = re.compile(
+    r"^(?:stop\s+and\s+)?(?:delete|remove|clear|cancel|stop|kill)\s+"
+    r"(?:all\s+)?(?:the\s+|my\s+)?jobs?$", re.I)
+_JOB_DELETE_ONE = re.compile(
+    r"^(?:delete|remove|cancel|stop|kill)\s+(?:the\s+)?job\s+#?(?P<n>\d+)$", re.I)
+
 _TIME = re.compile(
     r"^(?:what(?:'s|s| is)?\s+)?(?:the\s+)?"
     r"(?:time|date|day|today)"
@@ -99,6 +111,33 @@ def _do_chrome_profile(which: str) -> dict:
     email = r.get("email")
     say = f"Opened your {name} profile in Chrome" + (f" ({email})." if email else ".")
     return {"ok": True, "say": say, "evidence": r}
+
+
+def _do_setup_login(_: str = "") -> dict:
+    import browser
+    r = browser.open_for_login()
+    if not r.get("ok"):
+        raise ValueError(r.get("error", "could not open the browser"))
+    return {"ok": True,
+            "say": "Opened Jarvis's own Chrome at the OpenAI sign-in page. Sign "
+                   "in once in that window - it stays signed in for every future "
+                   "task.",
+            "evidence": r}
+
+
+def _do_delete_all_jobs(_: str = "") -> dict:
+    import state
+    n = state.delete_all_jobs()
+    say = (f"Removed {n} job{'s' if n != 1 else ''}." if n
+           else "There were no jobs to remove.")
+    return {"ok": True, "say": say, "evidence": {"deleted": n}}
+
+
+def _do_delete_job(n: str) -> dict:
+    import state
+    ok = state.delete_job(int(n))
+    say = f"Deleted job {n}." if ok else f"There is no job {n}."
+    return {"ok": True, "say": say, "evidence": {"id": int(n), "deleted": ok}}
 
 
 def _do_media(action: str) -> dict:
@@ -158,6 +197,9 @@ _ROUTES = (
     (_APPS, _do_apps, None),
     (_RUNNING, _do_running, None),
     (_MEDIA, _do_media, "action"),
+    (_LOGIN_SETUP, _do_setup_login, None),
+    (_JOBS_DELETE_ALL, _do_delete_all_jobs, None),
+    (_JOB_DELETE_ONE, _do_delete_job, "n"),
     (_CHROME_PROFILE, _do_chrome_profile, "which"),   # BEFORE _OPEN
     (_OPEN, _do_open, "app"),
 )

@@ -1,0 +1,123 @@
+"""
+Jobs can be deleted, and a watched chat alerts the owner about urgent messages
+(money, calls, decisions) while staying quiet about chit-chat. All offline:
+WhatsApp and the model are mocked.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT))
+
+import state  # noqa: E402
+import worker  # noqa: E402
+
+
+@pytest.fixture()
+def db(tmp_path, monkeypatch):
+    monkeypatch.setattr(state, "DB_PATH", tmp_path / "m.db")
+    monkeypatch.setattr(state, "_ready", set(), raising=False)
+    return tmp_path
+
+
+# ── jobs delete (bug 1) ───────────────────────────────────────────────────────
+
+def test_delete_one_job(db):
+    a = state.add_job("reminder", {"text": "x"})
+    state.add_job("reminder", {"text": "y"})
+    assert len(state.jobs()) == 2
+    assert state.delete_job(a) is True
+    assert len(state.jobs()) == 1
+    assert state.delete_job(999999) is False       # nothing to delete
+
+
+def test_delete_all_jobs(db):
+    state.add_job("reminder", {"text": "x"})
+    state.add_job("watch_chat", {"contact": "Kapcut"})
+    assert state.delete_all_jobs() == 2
+    assert state.jobs() == []
+
+
+def test_watch_poll_is_fast(db):
+    assert worker.WATCH_INTERVAL_S <= 6
+    assert worker.TICK_S <= 4
+
+
+# ── urgent detection (bug 2b) ─────────────────────────────────────────────────
+
+def _fake_whatsapp(monkeypatch, incoming, sent):
+    from lib import whatsapp
+    monkeypatch.setattr(whatsapp, "open", lambda c: {"contact": c})
+    monkeypatch.setattr(whatsapp, "new_since",
+                        lambda jid, since: [{"text": incoming, "ts": 9e9}])
+    monkeypatch.setattr(whatsapp, "send",
+                        lambda jid, txt: sent.append(txt) or {"contact": "ok"})
+
+
+def test_urgent_money_message_alerts_the_boss(db, monkeypatch):
+    sent, calls = [], []
+    _fake_whatsapp(monkeypatch, "boss you took my 10000, i want it right now", sent)
+    monkeypatch.setattr(worker, "_reply_and_judge",
+                        lambda *a: ("sure, I'll tell him",
+                                    "Kapcut says you took his 10,000 and wants it now"))
+    monkeypatch.setattr(worker, "call_boss",
+                        lambda reason, **k: calls.append(reason))
+    worker.watch_chat({"id": 1, "params": {"contact": "Kapcut"},
+                       "created_at": 0, "until": ""})
+    assert calls, "the Boss was NOT alerted about an urgent money message"
+    assert "10,000" in calls[0]
+    assert sent, "no reply was sent on the Boss's behalf"
+
+
+def test_chitchat_does_not_alert(db, monkeypatch):
+    sent, calls = [], []
+    _fake_whatsapp(monkeypatch, "hey how are you doing", sent)
+    monkeypatch.setattr(worker, "_reply_and_judge",
+                        lambda *a: ("good, you?", ""))
+    monkeypatch.setattr(worker, "call_boss",
+                        lambda reason, **k: calls.append(reason))
+    worker.watch_chat({"id": 1, "params": {"contact": "X"},
+                       "created_at": 0, "until": ""})
+    assert not calls, "chit-chat must NOT interrupt the Boss"
+
+
+def test_reply_and_judge_parses_the_models_json(db, monkeypatch):
+    class FakeResp:
+        output_text = ('{"reply":"ok boss","urgent":true,'
+                       '"alert":"he wants the money back"}')
+        usage = None
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.responses = self
+
+        def create(self, **k):
+            return FakeResp()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+    reply, alert = worker._reply_and_judge("jid", "Kapcut", "pay me now", "")
+    assert reply == "ok boss"
+    assert "money" in alert and "Kapcut" in alert
+
+
+def test_reply_and_judge_handles_non_json(db, monkeypatch):
+    class FakeResp:
+        output_text = "just a plain reply, no json here"
+        usage = None
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.responses = self
+
+        def create(self, **k):
+            return FakeResp()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+    reply, alert = worker._reply_and_judge("jid", "X", "hello", "")
+    assert reply and alert == ""          # degrades to a reply, no false alert

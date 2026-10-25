@@ -406,11 +406,37 @@ def _web_fetch(args, ctx) -> dict:
 
 
 def _schedule_job(args, ctx) -> dict:
-    jid = state.add_job(args.get("kind", ""), args.get("params") or {},
-                        args.get("every_seconds") or 60, args.get("until"))
+    kind = args.get("kind", "")
+    # A watched chat must reply quickly, so default it to a short interval
+    # unless the caller set one. Other kinds keep their given/60s cadence.
+    default_every = 5 if kind == "watch_chat" else 60
+    jid = state.add_job(kind, args.get("params") or {},
+                        args.get("every_seconds") or default_every,
+                        args.get("until"))
     ctx.evidence["job_ids"].append(jid)
     return {"ok": True, "job_id": jid,
             "note": f"job #{jid} is running in the worker process"}
+
+
+def _delete_jobs(args, ctx) -> dict:
+    """Delete a scheduled job and remove it from the live panel. 'which' is a
+    job number, 'all', or a word that matches a job (its kind or a contact)."""
+    import re
+    which = str(args.get("which", "")).strip().lower()
+    if which in ("all", "*", "everything", "every job", ""):
+        return {"ok": True, "deleted": state.delete_all_jobs(), "which": "all"}
+    m = re.search(r"\d+", which)
+    if m:
+        ok = state.delete_job(int(m.group()))
+        return {"ok": ok, "deleted": 1 if ok else 0, "id": int(m.group())}
+    # match by kind or a contact/text in params
+    removed = 0
+    for j in state.jobs():
+        blob = (j.get("kind", "") + " " + str(j.get("params") or "")).lower()
+        if which in blob:
+            removed += state.delete_job(j["id"])
+    return {"ok": removed > 0, "deleted": removed,
+            "note": f"removed {removed} job(s) matching {which!r}"}
 
 
 def _message_boss(args, ctx) -> dict:
@@ -431,6 +457,16 @@ def _ensure_browser(args, ctx) -> dict:
     try:
         r = browser.start_chrome_with_debugging()
         return {"ok": bool(r.get("ok", True)), **r}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _setup_login(args, ctx) -> dict:
+    """Open Jarvis's own Chrome at a sign-in page so the Boss logs in once."""
+    import browser
+    url = (args.get("url") or "https://platform.openai.com/").strip()
+    try:
+        return browser.open_for_login(url)
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -519,6 +555,12 @@ SCHEDULE_JOB = _t("schedule_job",
      "until": {"type": "string"}},
     ["kind", "params"], _schedule_job)
 
+DELETE_JOBS = _t("delete_jobs",
+    "Delete a scheduled job and remove it from the live panel. 'which' is a job "
+    "number, 'all' to clear every job, or a word matching a job (its kind or a "
+    "contact). Use when the Boss says to stop/remove/delete a job or all jobs.",
+    {"which": {"type": "string"}}, ["which"], _delete_jobs)
+
 MESSAGE_BOSS = _t("message_boss", "Send the Boss a Telegram message.",
     {"text": {"type": "string"}}, ["text"], _message_boss)
 
@@ -532,6 +574,14 @@ ENSURE_BROWSER = _t("ensure_browser",
     "Start Jarvis's own Chrome with its debug port so the browser can be "
     "driven. Call this once before browsing.",
     {}, [], _ensure_browser)
+
+SETUP_LOGIN = _t("setup_login",
+    "Open Jarvis's OWN Chrome at a sign-in page so the Boss logs in ONCE (it "
+    "then persists for every future task). Use this when a page is signed out, "
+    "shows a login screen, or lands on 'guest' - do NOT report the task done in "
+    "that case. Also use it when he asks to set up login for a site. Pass the "
+    "site url.",
+    {"url": {"type": "string"}}, [], _setup_login)
 
 ASK_BOSS = _t("ask_boss",
     "Ask the Boss instead of guessing when a name or instruction is ambiguous. "
@@ -681,7 +731,11 @@ _ROLE_RULES = {
         "exactly the text you need (titles, rows) - do NOT snapshot or evaluate "
         "the same page several times; get what you need in as few calls as "
         "possible. Click and type by the page's structure (role/text), never "
-        "pixels or screenshots.",
+        "pixels or screenshots. IF THE PAGE IS SIGNED OUT - a login screen, a "
+        "'guest' state, or it asks the Boss to sign in - you are in Jarvis's "
+        "own Chrome, which needs a one-time sign-in: call setup_login(url) and "
+        "tell the Boss to sign in once in the Jarvis Chrome window. Do NOT "
+        "report the task done, and never pretend you saw his account.",
 }
 
 
@@ -771,7 +825,8 @@ def build_team(force: bool = False) -> Agent:
                      mcp_groups=[group])
 
     files = sub("files", "files specialist", "files", [])
-    browser = sub("browser", "browser specialist", "browser", [ENSURE_BROWSER])
+    browser = sub("browser", "browser specialist", "browser",
+                  [ENSURE_BROWSER, SETUP_LOGIN])
     desktop = sub("desktop", "desktop specialist", "desktop",
                   [OPEN_APP, OPEN_CHROME_PROFILE, MEDIA, PROCESSES, STATS,
                    LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
@@ -784,7 +839,8 @@ def build_team(force: bool = False) -> Agent:
 
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
-    orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB, ASK_BOSS,
+    orch_tools += [PLAN, RUN_PYTHON, REMEMBER, RECALL, SCHEDULE_JOB,
+                   DELETE_JOBS, ASK_BOSS,
                    MESSAGE_BOSS]
 
     # terra at medium: routing and the final answer are where a wrong call

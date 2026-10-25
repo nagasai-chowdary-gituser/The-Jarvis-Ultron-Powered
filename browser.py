@@ -196,39 +196,85 @@ def chrome_running() -> bool:
         return False
 
 
-def seed_profile(force: bool = False) -> dict:
-    """Copy the owner's logins into Jarvis's profile, once.
+def _main_profile_dir() -> str:
+    """The real Chrome profile directory that holds the owner's MAIN account.
 
-    The automation profile has to be separate (Chrome will not open a debugging
-    port on the default one), which means it starts signed out of everything.
-    Copying the cookie database across makes it the owner's browser rather than
-    a stranger's - same Windows user, so the DPAPI-encrypted cookies decrypt
-    normally.
+    His accounts live in Profile 47/48/..., NOT in "Default" - so seeding from
+    "Default" (the old behaviour) copied an empty profile and the automation
+    browser was signed out of everything, which is why it showed "guest"."""
+    try:
+        from lib import desktop
+        profs = desktop.chrome_profiles()
+        if profs:
+            return profs[0]["dir"]           # first in picker order = main
+    except Exception:
+        pass
+    return "Default"
 
-    BEST EFFORT BY DESIGN. Chrome holds some of these files open while it runs,
-    and a locked file is a skipped file, not a failure: a profile with no
-    cookies still drives a page perfectly, it just needs a sign-in. Nothing here
-    writes to the real profile, and nothing is deleted."""
-    made = os.path.isdir(PROFILE_DIR)
-    if made and not force:
-        return {"ok": True, "status": "already_seeded"}
 
+# The login artifacts worth cloning OUT OF one real profile INTO the automation
+# profile's "Default". Relative to the source profile folder.
+_SEED_FROM_PROFILE = [
+    "Cookies", r"Network\Cookies", "Login Data", "Web Data", "Preferences",
+]
+_SEED_DIRS_FROM_PROFILE = [
+    r"Local Storage\leveldb", r"Session Storage",
+]
+
+
+def seed_profile(force: bool = False, source_profile: str | None = None) -> dict:
+    """Clone the owner's logins from a REAL profile into Jarvis's profile.
+
+    The automation profile is separate (Chrome will not open a debugging port on
+    the default user-data-dir), so it starts signed out. This copies the cookie
+    jar, saved logins and site storage from the chosen real profile - same
+    Windows user, so DPAPI-encrypted cookies decrypt normally - so the
+    automation browser IS the owner's account.
+
+    `source_profile` is a real profile directory ("Profile 47"); None means his
+    MAIN profile. A marker records which profile was last cloned, so switching
+    accounts re-seeds. BEST EFFORT: Chrome holds some files open while it runs,
+    and a locked file is skipped, not fatal - a missing cookie just means that
+    one site needs a sign-in, which then persists in the automation profile."""
     import shutil
+
+    source = source_profile or _main_profile_dir()
+    marker = os.path.join(PROFILE_DIR, ".seeded_from")
+    already = ""
+    try:
+        already = open(marker, encoding="utf-8").read().strip()
+    except Exception:
+        pass
+    if already == source and not force:
+        return {"ok": True, "status": "already_seeded", "source": source}
+
+    dst_default = os.path.join(PROFILE_DIR, "Default")
+    os.makedirs(dst_default, exist_ok=True)
     copied, skipped = [], []
-    for src_rel, dst_rel in SEED_FILES:
-        src = os.path.join(REAL_PROFILE_DIR, src_rel)
-        dst = os.path.join(PROFILE_DIR, dst_rel)
+
+    # Local State carries the DPAPI key that decrypts the cookies; without it
+    # the copied cookie jar is unreadable.
+    try:
+        shutil.copy2(os.path.join(REAL_PROFILE_DIR, "Local State"),
+                     os.path.join(PROFILE_DIR, "Local State"))
+        copied.append("Local State")
+    except Exception as e:
+        skipped.append(f"Local State ({type(e).__name__})")
+
+    for rel in _SEED_FROM_PROFILE:
+        src = os.path.join(REAL_PROFILE_DIR, source, rel)
+        dst = os.path.join(dst_default, rel)
         if not os.path.isfile(src):
             continue
         try:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             shutil.copy2(src, dst)
-            copied.append(src_rel)
+            copied.append(rel)
         except Exception as e:
-            skipped.append(f"{src_rel} ({type(e).__name__})")
-    for rel in SEED_DIRS:
-        src = os.path.join(REAL_PROFILE_DIR, rel)
-        dst = os.path.join(PROFILE_DIR, rel)
+            skipped.append(f"{rel} ({type(e).__name__})")
+    for rel in _SEED_DIRS_FROM_PROFILE:
+        src = os.path.join(REAL_PROFILE_DIR, source, rel)
+        dst = os.path.join(dst_default, rel)
         if not os.path.isdir(src):
             continue
         try:
@@ -238,8 +284,12 @@ def seed_profile(force: bool = False) -> dict:
         except Exception as e:
             skipped.append(f"{rel} ({type(e).__name__})")
 
+    try:
+        open(marker, "w", encoding="utf-8").write(source)
+    except Exception:
+        pass
     return {"ok": True, "copied": copied, "skipped": skipped,
-            "profile": PROFILE_DIR}
+            "source": source, "profile": PROFILE_DIR}
 
 
 def _kill_profile_chrome() -> int:
@@ -343,6 +393,68 @@ def start_chrome_with_debugging(restart: bool = False) -> dict:
                       "process may be holding port "
                       f"{DEBUG_PORT}, or Chrome is blocked from listening."),
             "spoken": "Chrome started but would not accept control."}
+
+
+def open_for_login(url: str = "https://platform.openai.com/") -> dict:
+    """Open Jarvis's OWN Chrome at a sign-in page so the owner logs in ONCE.
+
+    This is the reliable way for Jarvis to act in the owner's accounts. Jarvis
+    cannot drive his real Chrome (Chrome refuses a debug port on the default
+    profile, by design), and copying a live session across is fought by Google's
+    device-bound cookies. But Jarvis's own Chrome profile PERSISTS: sign in here
+    one time and it stays signed in for every future task, in the owner's real
+    account. The window is a normal, visible Chrome window - separate from his
+    main browser, so it looks fresh."""
+    r = start_chrome_with_debugging()
+    if not r.get("ok"):
+        return r
+    try:
+        goto(url, new_tab=True)
+    except Exception as e:
+        return {"ok": True, "url": url,
+                "note": f"Jarvis's Chrome is open; navigate to {url} and sign "
+                        f"in. ({type(e).__name__})"}
+    _raise_jarvis_chrome()
+    return {"ok": True, "url": url,
+            "note": "Jarvis's own Chrome is open at the sign-in page. Sign in "
+                    "ONCE in that window - it will stay signed in for every "
+                    "future task."}
+
+
+def _raise_jarvis_chrome() -> bool:
+    """Best-effort: bring Jarvis's Chrome window to the front so the owner sees
+    the sign-in page. Never fails the caller."""
+    try:
+        import ctypes
+
+        import psutil
+        pids = {p.pid for p in psutil.process_iter(["name", "cmdline"])
+                if (p.info.get("name") or "").lower() == "chrome.exe"
+                and PROFILE_DIR.lower() in " ".join(
+                    p.info.get("cmdline") or []).lower()}
+        if not pids:
+            return False
+        u32 = ctypes.windll.user32
+        found = []
+
+        def cb(hwnd, _):
+            pid = ctypes.c_ulong()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids and u32.IsWindowVisible(hwnd):
+                found.append(hwnd)
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
+                                         ctypes.c_void_p)
+        u32.EnumWindows(WNDENUMPROC(cb), 0)
+        for hwnd in found:
+            u32.keybd_event(0x12, 0, 0, 0)        # ALT, to permit foreground
+            u32.keybd_event(0x12, 0, 2, 0)
+            u32.ShowWindow(hwnd, 9)               # SW_RESTORE
+            u32.SetForegroundWindow(hwnd)
+        return bool(found)
+    except Exception:
+        return False
 
 
 @pinned

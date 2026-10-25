@@ -392,6 +392,31 @@ def job(job_id: int, db_path: Path | None = None) -> dict | None:
     return dict(r) if r else None
 
 
+def delete_job(job_id: int, db_path: Path | None = None) -> bool:
+    """Actually REMOVE a job. The owner said "delete" and meant delete - there
+    was only finish_job (a status flip), so a job he was done with never left
+    the queue or the LIVE WATCH panel. Returns whether a row was removed."""
+    c = _conn(db_path)
+    try:
+        cur = c.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        c.commit()
+        return cur.rowcount > 0
+    finally:
+        c.close()
+
+
+def delete_all_jobs(db_path: Path | None = None) -> int:
+    """Remove every job. Returns how many were deleted. Jobs are the worker's
+    queue, not history worth keeping - 'remove all jobs' clears it."""
+    c = _conn(db_path)
+    try:
+        cur = c.execute("DELETE FROM jobs")
+        c.commit()
+        return cur.rowcount
+    finally:
+        c.close()
+
+
 def jobs(status: str = "", db_path: Path | None = None) -> list[dict]:
     c = _conn(db_path)
     try:

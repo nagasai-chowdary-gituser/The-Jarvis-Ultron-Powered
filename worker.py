@@ -43,7 +43,11 @@ import safety  # noqa: E402
 import state  # noqa: E402
 from safety import Session, Transport  # noqa: E402
 
-TICK_S = 10.0                 # how often the queue is read
+TICK_S = 3.0                  # how often the queue is read (was 10 - too slow:
+                              # a watched-chat reply waited a whole tick before
+                              # the worker even looked, which is most of the
+                              # "it takes 15 seconds to reply" the owner saw)
+WATCH_INTERVAL_S = 5          # how often a watched chat is re-checked
 MAX_JOB_AGE_S = 6 * 3600      # a watch that has run this long has been forgotten
 LOG = ROOT / "worker.log"
 
@@ -261,7 +265,16 @@ def watch_chat(job: dict) -> dict:
                       f"That is the stop condition, so I have finished watching.")
             return {"stop": True, "note": f"stop condition met: {text[:80]}"}
 
-        reply = _compose_reply(jid, contact, text, persona)
+        reply, alert = _reply_and_judge(jid, contact, text, persona)
+
+        # INTELLIGENCE: if this message is something the Boss must know now -
+        # money he owes/took, a demand for payment, a call/meeting request, a
+        # decision only he can make - tell him. Rule: CALL first; call_boss
+        # falls back to a Telegram message if the call cannot be placed.
+        if alert:
+            log(f"job #{job['id']} URGENT from {contact}: {alert[:90]}")
+            call_boss(alert, job_id=job["id"], critical=True)
+
         if not reply:
             continue
         try:
@@ -278,12 +291,31 @@ def watch_chat(job: dict) -> dict:
     return {"stop": False}
 
 
-def _compose_reply(jid: str, contact: str, incoming: str, persona: str) -> str:
-    """One model call, with this contact's state loaded first.
+# What makes a message worth interrupting the Boss for. Deliberately described
+# as JUDGMENT, not a keyword list - the owner asked for "human-like
+# intelligence": a sharp assistant decides, it does not pattern-match.
+_URGENCY_RULES = """
+ALSO act as the Boss's sharp personal assistant and decide whether THIS message is something he must be told RIGHT NOW. Use judgment like a smart human would - these are the kinds of things that matter:
+- money: someone says he owes or took money, demands a payment, names an amount he must pay or is owed.
+- a request to reach him: asking for a call, a video call, a Google Meet, a meeting, to come somewhere, or to talk urgently.
+- a decision only he can make: an approval, a yes/no, a question you cannot answer for him, a commitment someone wants.
+- genuinely time-sensitive: a real deadline, "now/asap/urgent/today", an emergency.
+Ordinary chit-chat, greetings, small talk and things you can simply handle are NOT urgent. When it IS urgent, write one short line for the Boss naming WHO and WHAT, as a person would say it aloud - e.g. "Kapcut says you took his 10,000 and wants it back now" or "Priya is asking for a video call about the project"."""
 
-    IDENTITY IS ANCHORED HERE. The old build replied "I'm ChatGPT, helping my
-    friend with the conversation" - because there was no reply path at all and
-    no prompt that said who it was. It was the raw model free-typing into a GUI."""
+
+def _reply_and_judge(jid: str, contact: str, incoming: str,
+                     persona: str) -> tuple[str, str]:
+    """ONE model call that both replies AND judges urgency.
+
+    Returns (reply, alert). `alert` is a short line for the Boss when the
+    message is something he must know now, else "". Doing both in one call
+    keeps a watched chat cheap and fast - no second round trip per message.
+
+    IDENTITY IS ANCHORED HERE (the old build once replied "I'm ChatGPT..."),
+    and the urgency judgment is what the owner means by intelligence: Jarvis
+    noticing "he's asking about money you took" and telling him, like a person."""
+    import json as _json
+
     import models
     from openai import OpenAI
 
@@ -291,12 +323,6 @@ def _compose_reply(jid: str, contact: str, incoming: str, persona: str) -> str:
     ctx = state.as_context(jid)
     fenced = safety.fence(incoming, f"a WhatsApp message from {contact}")
 
-    # THE CONVERSATION SO FAR, not just the latest line.
-    #
-    # This used to pass only the incoming message and a summary, so every
-    # reply answered one sentence in isolation - which is exactly what "keep
-    # talking to him until he says bye" is not. A person who has just been
-    # asked "and what time?" needs to know what was being arranged.
     prior = []
     try:
         for m in state.history(jid, 10):
@@ -311,24 +337,42 @@ def _compose_reply(jid: str, contact: str, incoming: str, persona: str) -> str:
         client = OpenAI(timeout=30.0, max_retries=1)
         r = client.responses.create(
             model=models.BRAIN,
-            instructions=identity + ctx,
+            instructions=identity + ctx + _URGENCY_RULES,
             input=[{"role": "user", "content":
-                    f"{thread}\n\n{fenced}\n\nReply as yourself, in one or two "
-                    f"short sentences, the way a person texts. Continue the "
-                    f"conversation above - do not start over or re-introduce "
-                    f"yourself."}],
+                    f"{thread}\n\n{fenced}\n\nReply to continue the "
+                    f"conversation in one or two short sentences, the way a "
+                    f"person texts - do not start over or re-introduce "
+                    f"yourself. Then judge urgency.\n\nOutput ONLY JSON: "
+                    f'{{"reply": "<your reply>", "urgent": true|false, '
+                    f'"alert": "<one line for the Boss naming who and what, or '
+                    f'empty>"}}'}],
             reasoning={"effort": "low"},
-            max_output_tokens=400, store=False)
+            max_output_tokens=500, store=False)
         models.record(r, models.BRAIN)
-        reply = (r.output_text or "").strip()
+        raw = (r.output_text or "").strip()
     except Exception as e:
         log(f"reply generation failed: {type(e).__name__}: {e}")
-        return ""
+        return "", ""
+
+    reply, alert = "", ""
+    try:
+        a, b = raw.find("{"), raw.rfind("}")
+        if a >= 0 and b > a:
+            obj = _json.loads(raw[a:b + 1])
+            reply = str(obj.get("reply", "")).strip()
+            if obj.get("urgent") and str(obj.get("alert", "")).strip():
+                alert = f"{contact} on WhatsApp: {str(obj['alert']).strip()}"
+        else:
+            reply = raw                  # no JSON - the whole thing is the reply
+    except Exception:
+        reply = raw                      # malformed JSON - fall back to the text
+    if not reply:
+        reply = raw                      # never drop the message silently
 
     if reply:
         state.add_message(jid, "out", reply)
         state.update_thread(jid, summary=(state.thread(jid)["summary"] or "")[:400])
-    return reply[:900]
+    return reply[:900], alert[:300]
 
 
 def _persona_text(override: str = "") -> str:
