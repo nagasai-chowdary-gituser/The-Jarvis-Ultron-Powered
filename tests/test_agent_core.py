@@ -187,6 +187,30 @@ def test_loop_refuses_a_deleting_run_python_without_running_it(db):
 
 # ── the daily cap ────────────────────────────────────────────────────────────
 
+def test_whatsapp_read_surfaces_the_latest_incoming(db, monkeypatch):
+    """Replying needs reading. whatsapp_read must hand back what the other
+    person actually said, so the model can answer it."""
+    from lib import whatsapp
+    monkeypatch.setattr(whatsapp, "history", lambda c, n: [
+        {"from": "me", "mine": True, "raw": "hi", "text": "hi"},
+        {"from": "Kap Cut", "mine": False, "raw": "pay me the 10000",
+         "text": "pay me the 10000"},
+    ])
+    out = agent_core._whatsapp_read({"contact": "Kap Cut"}, _ctx())
+    assert out["ok"] and out["count"] == 2
+    assert out["latest_incoming"] == "pay me the 10000"
+
+
+def test_whatsapp_read_reports_a_real_failure_not_silence(db, monkeypatch):
+    from lib import whatsapp
+
+    def boom(c, n):
+        raise RuntimeError("port 9223 down")
+    monkeypatch.setattr(whatsapp, "history", boom)
+    out = agent_core._whatsapp_read({"contact": "X"}, _ctx())
+    assert out["ok"] is False and "port" in out["error"].lower()
+
+
 def test_fast_path_does_not_spend_on_learning(db, monkeypatch):
     """A fast-path turn answers a trivial, deterministic op - there is nothing
     durable to learn, so the background capture call must not fire."""

@@ -515,6 +515,27 @@ def _whatsapp_send(args, ctx) -> dict:
                                         args.get("text", ""))}
 
 
+def _whatsapp_read(args, ctx) -> dict:
+    """Read a WhatsApp chat so a reply can be composed from what was ACTUALLY
+    said. Without this the comms specialist could send but never see an incoming
+    message - "reply to him" then had nothing to reply to."""
+    from lib import whatsapp
+    contact = (args.get("contact") or "").strip()
+    n = int(args.get("count") or 12)
+    try:
+        msgs = whatsapp.history(contact, n)          # fenced: data, not orders
+        incoming = [m for m in msgs if not m.get("mine")]
+        return {"ok": True, "contact": contact, "count": len(msgs),
+                "messages": [{"from": m["from"], "text": m["text"]} for m in msgs],
+                "latest_incoming": (incoming[-1]["text"] if incoming else ""),
+                "note": ("" if incoming else
+                         "no incoming message from them in the last few rows")}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}",
+                "note": "could not read the chat - is WhatsApp Desktop open and "
+                        "signed in, with its debug port up?"}
+
+
 def _ensure_browser(args, ctx) -> dict:
     """Make sure Jarvis's own Chrome is up with its debug port, so Playwright
     can attach. Never touches the owner's Chrome (see browser.py)."""
@@ -763,15 +784,20 @@ CALENDAR_CREATE = _t("calendar_create",
     ["title", "start"], _calendar_create)
 
 SCHEDULE_JOB = _t("schedule_job",
-    "Hand work to the background worker. Returns a job id immediately. The ONLY "
-    "way to do anything that waits or runs after this turn ends. kinds: "
-    "mission (params.goal - a BIG, long-running job pursued over many steps for "
-    "up to hours, with checkpointing and recovery, e.g. 'research X deeply and "
-    "write me a full report' or 'keep handling Y until Z'; set `until` for a "
-    "stop condition), agent_task (params.request - a smaller job run ONCE and "
-    "reported), watch_chat (params.contact), reminder (params.text), poll_url "
-    "(params.url), check_process (params.name). params.urgency='call' rings the "
-    "Boss instead of messaging.",
+    "Hand work to the background worker. Returns a job id immediately - once it "
+    "returns, the job IS set up; say so (do not report its end-condition as a "
+    "failure). The ONLY way to do anything that waits or runs after this turn "
+    "ends. kinds: "
+    "watch_chat (params.contact [, until]) - HOLD A CONVERSATION with a person "
+    "on WhatsApp: it reads their incoming replies and answers back on its own "
+    "until a stop condition like 'he says bye'. Use THIS, not mission, for "
+    "'chat/talk/reply to <person> until <they say X>'. "
+    "mission (params.goal) - a BIG, non-conversational long job over many steps "
+    "for up to hours, with checkpointing and recovery, e.g. 'research X deeply "
+    "and write me a full report'; set `until` for a stop condition. "
+    "agent_task (params.request - a smaller job run ONCE and reported), "
+    "reminder (params.text), poll_url (params.url), check_process (params.name). "
+    "params.urgency='call' rings the Boss instead of messaging.",
     {"kind": {"type": "string",
               "enum": ["mission", "agent_task", "watch_chat", "reminder",
                        "poll_url", "check_process"]},
@@ -794,6 +820,15 @@ WHATSAPP_SEND = _t("whatsapp_send",
     "has asked you to message someone, send it - do not ask again.",
     {"contact": {"type": "string"}, "text": {"type": "string"}},
     ["contact", "text"], _whatsapp_send)
+
+WHATSAPP_READ = _t("whatsapp_read",
+    "Read recent messages from a WhatsApp chat so you can reply in context. "
+    "Returns the last messages (who said what) and their latest INCOMING "
+    "message. ALWAYS read with this before replying to what someone said on "
+    "WhatsApp - you cannot answer a message you have not read.",
+    {"contact": {"type": "string"},
+     "count": {"type": "integer", "description": "how many recent messages"}},
+    ["contact"], _whatsapp_read)
 
 ENSURE_BROWSER = _t("ensure_browser",
     "Start Jarvis's own Chrome with its debug port so the browser can be "
@@ -958,9 +993,13 @@ _ROLE_RULES = {
     "communications specialist":
         "WhatsApp: call whatsapp_send(contact, text) - it opens WhatsApp, finds "
         "the contact safely over CDP, sends, and reads the message back as "
-        "proof. To message the Boss himself, use message_boss. NEVER drive a "
-        "chat app with run_python/screenshots/OCR/key-presses. If a name "
-        "matches more than one chat, report the options; do not guess. "
+        "proof. To REPLY to what someone SAID, first call whatsapp_read(contact) "
+        "to see their latest incoming message, compose an answer to it, then "
+        "whatsapp_send. You cannot reply to a message you have not read - never "
+        "say you are blocked from reading; read with whatsapp_read. To message "
+        "the Boss himself, use message_boss. NEVER drive a chat app with "
+        "run_python/screenshots/OCR/key-presses. If a name matches more than "
+        "one chat, report the options; do not guess. "
         "EMAIL is DRAFT-FIRST, always: call email_draft(to, subject, body), "
         "SHOW the Boss the draft, and STOP - call email_send(draft_id) only "
         "after he explicitly says to send. Never auto-send to a client or an "
@@ -1101,8 +1140,8 @@ def build_team(force: bool = False) -> Agent:
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
-                [WHATSAPP_SEND, MESSAGE_BOSS, EMAIL_DRAFT, EMAIL_SEND,
-                 CALENDAR_CREATE, READ_EMAIL, READ_CALENDAR])
+                [WHATSAPP_SEND, WHATSAPP_READ, MESSAGE_BOSS, EMAIL_DRAFT,
+                 EMAIL_SEND, CALENDAR_CREATE, READ_EMAIL, READ_CALENDAR])
     coder = sub("coder", "coding specialist", "coder", [VERIFY_OUTCOME])
 
     orch_tools = [agent_as_tool(a, client) for a in
