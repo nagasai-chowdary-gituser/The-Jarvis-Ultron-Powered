@@ -606,6 +606,52 @@ def _make_pptx(args, ctx) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def _make_docx(args, ctx) -> dict:
+    """Build a .docx DIRECTLY with python-docx: one file, always saved, and NO
+    Word window opens. The Word twin of make_pptx - for letters, reports, notes,
+    any document, instead of driving Word by COM."""
+    import os
+    title = (args.get("title") or "").strip()
+    name = (args.get("filename") or title or "document").strip()
+    if not name.lower().endswith(".docx"):
+        name += ".docx"
+    path = name if os.path.isabs(name) else os.path.join(str(safety.WORKSPACE),
+                                                         name)
+    sections = args.get("sections")
+    body = args.get("body")
+    try:
+        from docx import Document
+        doc = Document()
+        if title:
+            doc.add_heading(title, level=0)
+        # Two shapes, whichever the model sends: a list of {heading, text} /
+        # {heading, bullets} sections, or one plain body string.
+        if sections:
+            for sec in sections:
+                if isinstance(sec, str):
+                    doc.add_paragraph(sec)
+                    continue
+                h = str(sec.get("heading") or sec.get("title") or "").strip()
+                if h:
+                    doc.add_heading(h, level=1)
+                text = sec.get("text") or sec.get("body") or ""
+                if text:
+                    for para in str(text).split("\n"):
+                        doc.add_paragraph(para)
+                for b in (sec.get("bullets") or []):
+                    doc.add_paragraph(str(b), style="List Bullet")
+        if body:
+            for para in str(body).split("\n"):
+                doc.add_paragraph(para)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        doc.save(path)
+        return {"ok": True, "path": path, "paragraphs": len(doc.paragraphs),
+                "note": f"Saved a Word document to {path}. One file, saved on "
+                        f"disk - no Word window was opened."}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def _call_me(args, ctx) -> dict:
     """Place a REAL phone call to the Boss (Twilio). Honest by construction: it
     returns ok only when the call was actually placed, and names the real reason
@@ -937,6 +983,18 @@ MAKE_PPTX = _t("make_pptx",
      "slides": {"type": "array", "items": {"type": "object"}}},
     ["title", "slides"], _make_pptx)
 
+MAKE_DOCX = _t("make_docx",
+    "Create a Word document (.docx) and SAVE it - built directly, so NO Word "
+    "window opens and it is always written to disk. Use THIS for any document "
+    "(letter, report, notes); never drive Word by COM/run_python. Give a title "
+    "and either `sections` (a list of {heading, text or bullets:[...]}) or a "
+    "plain `body` string.",
+    {"title": {"type": "string"},
+     "filename": {"type": "string", "description": "optional .docx name"},
+     "sections": {"type": "array", "items": {"type": "object"}},
+     "body": {"type": "string"}},
+    ["title"], _make_docx)
+
 CALL_ME = _t("call_me",
     "Place a REAL phone call to the Boss over Twilio and speak a short message - "
     "use when he says 'call me' or something needs him by voice. If it returns "
@@ -1083,7 +1141,7 @@ You lead a small team of specialists and you decide who does what. Hand a job to
   comms    - WhatsApp and Telegram. It OPENS the app itself, finds the contact safely over the app's own protocol, sends, and verifies. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
   coder    - read/write code and work with GitHub
 For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot. If a saved skill (a tool marked "[saved skill]") already does what is asked, just call it. When run_python solves something non-trivial that the Boss is likely to want again, call save_skill to crystallize it, so next time it is one call.
-To make a PowerPoint/deck, use make_pptx - it writes ONE saved .pptx with no window. "Four slides" means four entries in its slides list, NOT four files or four windows. Never open PowerPoint per slide.
+To make a PowerPoint/deck, use make_pptx; to make a Word document, use make_docx - each writes ONE saved file with no app window. "Four slides" means four entries in the slides list, NOT four files or four windows. Never drive PowerPoint or Word by COM.
 
 ROUTING - this is where turns go wrong, so get it right:
 - Messaging ANYONE on WhatsApp or Telegram is ONE comms call, and ONLY comms. comms opens the app itself, so NEVER send "open whatsapp" to desktop as a separate step, and never try to drive a chat app any other way. "open whatsapp and message Kap Cut hi" = one comms call: "send the WhatsApp message 'hi' to Kap Cut".
@@ -1246,7 +1304,7 @@ def build_team(force: bool = False) -> Agent:
                      mcp_groups=[group])
 
     files = sub("files", "files specialist", "files",
-                [VERIFY_OUTCOME, MAKE_PPTX])
+                [VERIFY_OUTCOME, MAKE_PPTX, MAKE_DOCX])
     browser = sub("browser", "browser specialist", "browser",
                   [ENSURE_BROWSER, SETUP_LOGIN, VERIFY_OUTCOME])
     desktop = sub("desktop", "desktop specialist", "desktop",
@@ -1263,8 +1321,8 @@ def build_team(force: bool = False) -> Agent:
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
     orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, MAKE_PPTX,
-                   RECENT_ACTIVITY, CALL_ME, REMEMBER, RECALL, SCHEDULE_JOB,
-                   DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
+                   MAKE_DOCX, RECENT_ACTIVITY, CALL_ME, REMEMBER, RECALL,
+                   SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN]
     # Crystallized skills become first-class tools - the whole point of saving
     # one is that next time it is a direct call, routed by its description. A

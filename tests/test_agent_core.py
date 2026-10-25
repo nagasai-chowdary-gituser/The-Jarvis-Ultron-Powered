@@ -227,6 +227,29 @@ def test_make_pptx_writes_exactly_the_slides_asked_for(tmp_path):
     assert p.exists() and p.stat().st_size > 0        # actually saved to disk
 
 
+def test_make_docx_writes_a_real_saved_word_file(tmp_path):
+    out = agent_core._make_docx(
+        {"title": "Flood Response Plan",
+         "filename": str(tmp_path / "plan.docx"),
+         "sections": [{"heading": "Summary", "text": "Monsoon flooding hit hard."},
+                      {"heading": "Actions", "bullets": ["evacuate", "supplies"]}]},
+        _ctx())
+    assert out["ok"]
+    p = Path(out["path"])
+    assert p.exists() and p.stat().st_size > 0        # actually saved to disk
+    from docx import Document
+    doc = Document(str(p))                             # re-open = proof it is real
+    text = "\n".join(par.text for par in doc.paragraphs)
+    assert "Flood Response Plan" in text and "evacuate" in text
+
+
+def test_make_docx_accepts_a_plain_body(tmp_path):
+    out = agent_core._make_docx(
+        {"title": "Note", "filename": str(tmp_path / "note.docx"),
+         "body": "line one\nline two"}, _ctx())
+    assert out["ok"] and Path(out["path"]).exists()
+
+
 def test_activity_log_lets_jarvis_answer_for_itself(db):
     state.record_action("make_pptx", True, 1800, "saved nepal.pptx",
                         channel="chan:test")
