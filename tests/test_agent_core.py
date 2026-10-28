@@ -346,6 +346,73 @@ def test_independent_specialists_run_in_parallel(db):
     assert order.index("y-start") < order.index("x-end")
 
 
+# ── context window: in-turn compaction + cross-turn rolling summary ───────────
+
+def test_compact_convo_never_breaks_call_output_pairing(db):
+    big = "x" * 4000
+    convo = [{"role": "developer", "content": "ctx"},
+             {"role": "user", "content": "go"}]
+    for i in range(20):
+        convo.append({"type": "function_call", "name": "t",
+                      "arguments": "{}", "call_id": f"c{i}"})
+        convo.append({"type": "function_call_output", "call_id": f"c{i}",
+                      "output": big})
+    n_items = len(convo)
+    n_calls = sum(1 for m in convo if m.get("type") == "function_call")
+    n_outs = sum(1 for m in convo if m.get("type") == "function_call_output")
+
+    agent_core._compact_convo(convo)
+
+    # NOTHING removed - every function_call still has its output beside it
+    assert len(convo) == n_items
+    assert sum(1 for m in convo if m.get("type") == "function_call") == n_calls
+    assert sum(1 for m in convo if m.get("type") == "function_call_output") == n_outs
+    outs = [m for m in convo if m.get("type") == "function_call_output"]
+    # older outputs trimmed, the newest KEEP_WHOLE_OUTPUTS kept whole
+    assert any("trimmed to save context" in m["output"]
+               for m in outs[:-agent_core.KEEP_WHOLE_OUTPUTS])
+    assert all(len(m["output"]) > 240
+               for m in outs[-agent_core.KEEP_WHOLE_OUTPUTS:])
+
+
+def test_compact_convo_leaves_a_small_turn_untouched(db):
+    convo = [{"type": "function_call_output", "call_id": "c1", "output": "short"}]
+    agent_core._compact_convo(convo)
+    assert convo[0]["output"] == "short"
+
+
+def test_rolling_summary_is_empty_for_a_short_chat(db):
+    import brain
+    import state
+    state.add_message("chan:t", "in", "hi there")
+    assert brain.rolling_summary("chan:t") == ""
+
+
+def test_rolling_summary_recaps_a_long_chat(db, monkeypatch):
+    import brain
+    import state
+    for i in range(30):
+        state.add_message("chan:t", "in", f"message {i} about the Nepal project")
+        state.add_message("chan:t", "out", f"noted {i}")
+
+    class FakeResp:
+        output_text = "Boss and Jarvis worked through the Nepal project plan."
+        usage = None
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.responses = self
+
+        def create(self, **k):
+            return FakeResp()
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", FakeClient)
+    monkeypatch.setattr(brain.models, "record", lambda *a, **k: None)
+    out = brain.rolling_summary("chan:t")
+    assert "Nepal project plan" in out and "EARLIER IN THIS CONVERSATION" in out
+
+
 # ── cost: cacheable prompt, no behaviour change ───────────────────────────────
 
 class _RecClient(FakeClient):

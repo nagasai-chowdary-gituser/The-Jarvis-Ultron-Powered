@@ -56,6 +56,38 @@ MAX_ROUNDS_ORCH = 24
 MAX_ROUNDS_SUB = 18          # enough for a multi-step UI task without the boss retrying
 TOOL_OUTPUT_LIMIT = 2000
 
+# Keep a long turn from swelling toward the model's context limit. This is the
+# IN-TURN half of context management (the cross-turn half is the rolling summary
+# in brain.py). It is written to be SAFE above all: it never removes an item, so
+# every function_call still has its function_call_output beside it - a mismatch
+# there is the Responses API error that kills a whole turn. It only SHORTENS the
+# output text of OLDER tool results; the most recent results stay whole, because
+# those are the ones the model is still reasoning about.
+MAX_CONVO_CHARS = 60000      # ~15k tokens of conversation, below any real limit
+KEEP_WHOLE_OUTPUTS = 6       # newest tool results kept in full
+
+
+def _compact_convo(convo: list[dict]) -> None:
+    """Trim older tool-result text in place when the turn gets large. Safe by
+    construction: items are kept, only the 'output' string of old
+    function_call_output entries is shortened, so call/output pairing holds."""
+    total = 0
+    for m in convo:
+        try:
+            total += len(json.dumps(m, default=str))
+        except Exception:
+            total += 200
+    if total <= MAX_CONVO_CHARS:
+        return
+    out_idx = [i for i, m in enumerate(convo)
+               if isinstance(m, dict) and m.get("type") == "function_call_output"]
+    for i in out_idx[:-KEEP_WHOLE_OUTPUTS] if len(out_idx) > KEEP_WHOLE_OUTPUTS else []:
+        o = convo[i].get("output") or ""
+        if len(o) > 240:
+            trimmed = dict(convo[i])
+            trimmed["output"] = o[:240] + " …[earlier result trimmed to save context]"
+            convo[i] = trimmed
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tools — three kinds behind one shape: name, schema, and a call(args)->dict.
@@ -262,6 +294,7 @@ class Agent:
             if ctx.session.calls >= safety.RUNAWAY_TOOL_CALLS:
                 return "I hit my runaway ceiling - that is a loop on my side."
             b.round_started()
+            _compact_convo(convo)          # keep a long turn inside its window
             try:
                 resp = client.responses.create(
                     model=self.model, instructions=instr,
@@ -1486,6 +1519,7 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # schemas stay byte-identical so the prefix cache covers them.
     context = (state.facts_block()
                + memory.preferences_block()             # how he likes things done
+               + brain.rolling_summary(channel)         # recap of the older chat
                + memory.recall_block(text)
                + (state.as_context(jid) if jid else ""))
     reply = team.run(text, ctx, _client(), history=history, context=context)

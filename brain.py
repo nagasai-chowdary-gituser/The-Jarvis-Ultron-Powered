@@ -668,6 +668,84 @@ def _remember_turn(channel: str, direction: str, text: str) -> None:
         state.record_error("brain.remember_turn", e)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Rolling conversation summary — the CROSS-TURN half of context management
+#
+# _recent_turns only shows the last dozen lines, so in a long chat everything
+# before that is gone (except whatever became a durable memory). This keeps a
+# compact recap of the OLDER part of the conversation and injects it as context,
+# so Jarvis remembers the thread of a long conversation, not just its tail.
+#
+# It is CACHED and recomputed only every ROLLING_EVERY new turns, so it costs
+# almost nothing per turn, and it DEGRADES: a failed summary just returns the
+# last one (or nothing), never an error.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ROLLING_EVERY = 8
+_SUMMARY_FACT = "convo_summary"
+_SUMMARY_PROMPT = (
+    "Summarise this earlier part of a conversation between the Boss and his "
+    "assistant Jarvis in 3-5 short lines: the key facts, the decisions made, the "
+    "open threads, and anything still pending. Be concrete and concise - it is a "
+    "memory aid, not prose.")
+
+
+def rolling_summary(channel: str) -> str:
+    """A prompt-ready recap of the conversation BEFORE the recent window, or ''.
+    Cached per channel; recomputed only when the chat has grown ROLLING_EVERY
+    turns since the last one."""
+    if not channel:
+        return ""
+    try:
+        rows = state.history(channel, 80)
+    except Exception:
+        return ""
+    if len(rows) <= TURN_MEMORY + 4:
+        return ""                           # short chat: recent turns cover it
+
+    key = f"{_SUMMARY_FACT}:{channel}"
+    try:
+        facts = state.facts()
+    except Exception:
+        facts = {}
+    cached = facts.get(key) or ""
+    try:
+        cached_at = int(facts.get(key + ":at") or 0)
+    except (TypeError, ValueError):
+        cached_at = 0
+
+    def block(s: str) -> str:
+        return ("\nEARLIER IN THIS CONVERSATION (recap of what came before the "
+                "recent messages):\n" + s + "\n") if s else ""
+
+    if cached and (len(rows) - cached_at) < ROLLING_EVERY:
+        return block(cached)
+
+    older = rows[:-TURN_MEMORY]
+    convo_text = "\n".join(
+        f"{'Boss' if r.get('direction') == 'in' else 'Jarvis'}: "
+        f"{(r.get('text') or '')[:300]}" for r in older)[-6000:]
+    try:
+        from openai import OpenAI
+        r = OpenAI(timeout=30, max_retries=1).responses.create(
+            model=models.BRAIN, instructions=_SUMMARY_PROMPT,
+            input=[{"role": "user", "content": convo_text}],
+            reasoning={"effort": "low"}, max_output_tokens=300, store=False)
+        models.record(r, models.BRAIN)
+        summary = (r.output_text or "").strip()[:800]
+    except Exception as e:
+        state.record_error("brain.rolling_summary", e)
+        return block(cached)
+
+    if summary:
+        try:
+            state.set_fact(key, summary)
+            state.set_fact(key + ":at", str(len(rows)))
+        except Exception:
+            pass
+    return block(summary or cached)
+
+
 def _progress_kind(tool: str, args: dict, result: dict) -> str | None:
     """Did this result move the objective, and how? None means it did not.
 
