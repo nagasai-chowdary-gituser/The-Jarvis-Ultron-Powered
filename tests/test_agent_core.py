@@ -366,6 +366,60 @@ def test_locate_scales_model_coords_into_cursor_space(monkeypatch):
     assert out["what"] == "Skip Ad"
 
 
+def test_trio_loop_locate_then_guarded_click_then_look(db, monkeypatch):
+    """End-to-end wiring of the trio (not isolated units): the eyes' coordinates
+    flow into a GUARDED click, and the confirm glance runs. Model + OS stubbed;
+    the coordinate flow, the guard, and the loop order are real."""
+    from PIL import Image
+
+    from lib import cursor, vision
+
+    # EYES: locate a benign target -> coordinates
+    monkeypatch.setattr(vision, "_capture_screen",
+                        lambda: Image.new("RGB", (1000, 800)))
+    monkeypatch.setattr(vision, "_ask",
+                        lambda img, q: '{"found": true, "x": 400, "y": 300,'
+                                       ' "what": "Skip Ad button"}')
+    monkeypatch.setattr(cursor, "screen_size", lambda: (1000, 800))
+    loc = agent_core._locate_on_screen({"target": "the Skip Ad button"}, _ctx())
+    assert loc["found"] and (loc["x"], loc["y"]) == (400, 300)
+
+    # HAND: those exact coordinates go into a guarded click (cursor stubbed)
+    clicked = []
+    monkeypatch.setattr(cursor, "click", lambda x, y, **k: clicked.append((x, y)))
+    clk = agent_core._cursor_click(
+        {"x": loc["x"], "y": loc["y"], "label": loc["what"]}, _ctx())
+    assert clk["ok"] and clicked == [(400, 300)]      # eyes -> hand, in bounds
+
+    # LOOK: the confirm glance runs before any claim
+    monkeypatch.setattr(vision, "see_screen",
+                        lambda q="", w="": {"ok": True,
+                                            "answer": "The video is playing, no ad."})
+    look = agent_core._see_screen(
+        {"question": "is the song actually playing or is an ad showing?"}, _ctx())
+    assert look["ok"] and "playing" in look["answer"]
+
+
+def test_trio_loop_guard_still_fires_on_a_located_payment_button(db, monkeypatch):
+    """If the eyes land on a Pay button, the click is still refused - the loop
+    does not launder a dangerous target."""
+    from PIL import Image
+
+    from lib import cursor, vision
+    monkeypatch.setattr(vision, "_capture_screen",
+                        lambda: Image.new("RGB", (1000, 800)))
+    monkeypatch.setattr(vision, "_ask",
+                        lambda img, q: '{"found": true, "x": 500, "y": 500,'
+                                       ' "what": "Buy now button"}')
+    monkeypatch.setattr(cursor, "screen_size", lambda: (1000, 800))
+    clicked = []
+    monkeypatch.setattr(cursor, "click", lambda *a, **k: clicked.append(a))
+    loc = agent_core._locate_on_screen({"target": "the purchase button"}, _ctx())
+    clk = agent_core._cursor_click(
+        {"x": loc["x"], "y": loc["y"], "label": loc["what"]}, _ctx())
+    assert clk["ok"] is False and not clicked        # refused, nothing clicked
+
+
 def test_locate_reports_not_found_cleanly(monkeypatch):
     from PIL import Image
 
