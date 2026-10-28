@@ -5,6 +5,7 @@ without a network call.
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -19,12 +20,18 @@ import state  # noqa: E402
 
 
 def _fake_embed(texts):
-    """Deterministic vectors: shared words -> higher cosine. No network."""
+    """Deterministic vectors: shared words -> higher cosine. No network.
+
+    Uses a STABLE hash (md5), not Python's built-in hash(), which is randomised
+    per process (PYTHONHASHSEED) - that made word buckets collide differently
+    each run and the cosine ranking flip occasionally. A test embedding must be
+    the same every run."""
     out = []
     for t in texts:
         v = np.zeros(memory.EMBED_DIM, dtype=np.float32)
         for w in (t or "").lower().split():
-            h = abs(hash(w)) % memory.EMBED_DIM
+            h = int.from_bytes(hashlib.md5(w.encode("utf-8")).digest()[:4],
+                               "big") % memory.EMBED_DIM
             v[h] += 1.0
         out.append(v if v.any() else np.ones(memory.EMBED_DIM, dtype=np.float32))
     return out
