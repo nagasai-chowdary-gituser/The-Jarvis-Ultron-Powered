@@ -350,36 +350,45 @@ def test_cursor_key_presses_a_chord(db, monkeypatch):
 
 # ── the trio: eyes locate, hand clicks ────────────────────────────────────────
 
-def _mock_point(monkeypatch, fx, fy, what):
-    """Make _ask_point return a point at (fx, fy) fractions of whatever image it
-    is given - stable across the coarse and fine passes."""
+def _mock_grid(monkeypatch, fx, fy, fine=True):
+    """Make _grid_pick return a cell box centred at (fx, fy) of whatever image it
+    is given (Set-of-Marks grounding). `fine=False` makes the second (fine) pass
+    return None, so the result is marked reliable=False."""
     from PIL import Image
 
     from lib import cursor, vision
     monkeypatch.setattr(vision, "_capture_screen",
                         lambda: Image.new("RGB", (1920, 1200)))
     monkeypatch.setattr(cursor, "screen_size", lambda: (1536, 960))
-    monkeypatch.setattr(vision, "_ask_point",
-                        lambda img, t: {"found": True, "x": img.size[0] * fx,
-                                        "y": img.size[1] * fy, "what": what})
+    calls = {"n": 0}
+
+    def pick(img, target, cols, rows):
+        calls["n"] += 1
+        if calls["n"] >= 2 and not fine:
+            return None
+        w, h = img.size
+        cw, ch = w / cols, h / rows
+        cx, cy = w * fx, h * fy
+        return (cx - cw / 2, cy - ch / 2, cx + cw / 2, cy + ch / 2)
+
+    monkeypatch.setattr(vision, "_grid_pick", pick)
 
 
 def test_locate_returns_bounded_coords_when_found(monkeypatch):
     from lib import vision
-    _mock_point(monkeypatch, 0.2, 0.2, "Skip Ad")      # clearly off-centre
+    _mock_grid(monkeypatch, 0.3, 0.4)
     out = vision.locate("the Skip Ad button")
     assert out["ok"] and out["found"] and out["reliable"] is True
     assert 0 <= out["x"] < 1536 and 0 <= out["y"] < 960   # inside the screen
 
 
-def test_locate_flags_a_centre_punt_as_unreliable(monkeypatch):
-    # The real failure mode found live: the model returns dead-centre when it
-    # cannot truly ground, so that must be marked NOT reliable.
+def test_locate_coarse_only_is_marked_less_reliable(monkeypatch):
+    # If the fine (zoom) pass can't pin it, the result is coarse-only -> reliable
+    # False, so the caller treats it as approximate.
     from lib import vision
-    _mock_point(monkeypatch, 0.5, 0.5, "button")
+    _mock_grid(monkeypatch, 0.3, 0.4, fine=False)
     out = vision.locate("the button")
     assert out["found"] and out["reliable"] is False
-    assert "LOW CONFIDENCE" in out["note"]
 
 
 def test_trio_loop_locate_then_guarded_click_then_look(db, monkeypatch):
@@ -387,14 +396,14 @@ def test_trio_loop_locate_then_guarded_click_then_look(db, monkeypatch):
     click, and the confirm glance runs. Model + OS stubbed; the coordinate flow,
     the guard, and the loop order are real."""
     from lib import cursor, vision
-    _mock_point(monkeypatch, 0.2, 0.2, "Skip Ad button")
+    _mock_grid(monkeypatch, 0.3, 0.3)
     loc = agent_core._locate_on_screen({"target": "the Skip Ad button"}, _ctx())
     assert loc["found"] and 0 <= loc["x"] < 1536 and 0 <= loc["y"] < 960
 
     clicked = []
     monkeypatch.setattr(cursor, "click", lambda x, y, **k: clicked.append((x, y)))
     clk = agent_core._cursor_click(
-        {"x": loc["x"], "y": loc["y"], "label": loc["what"]}, _ctx())
+        {"x": loc["x"], "y": loc["y"], "label": "the Skip Ad button"}, _ctx())
     assert clk["ok"] and clicked == [(loc["x"], loc["y"])]   # eyes -> hand
 
     monkeypatch.setattr(vision, "see_screen",
@@ -406,15 +415,15 @@ def test_trio_loop_locate_then_guarded_click_then_look(db, monkeypatch):
 
 
 def test_trio_loop_guard_still_fires_on_a_located_payment_button(db, monkeypatch):
-    """If the eyes land on a Pay button, the click is still refused - the loop
-    does not launder a dangerous target."""
+    """Even with a real located coordinate, a click LABELLED as a pay control is
+    refused - the loop does not launder a dangerous target."""
     from lib import cursor, vision
-    _mock_point(monkeypatch, 0.3, 0.3, "Buy now button")
+    _mock_grid(monkeypatch, 0.3, 0.3)
     clicked = []
     monkeypatch.setattr(cursor, "click", lambda *a, **k: clicked.append(a))
     loc = agent_core._locate_on_screen({"target": "the purchase button"}, _ctx())
     clk = agent_core._cursor_click(
-        {"x": loc["x"], "y": loc["y"], "label": loc["what"]}, _ctx())
+        {"x": loc["x"], "y": loc["y"], "label": "Buy now button"}, _ctx())
     assert clk["ok"] is False and not clicked        # refused, nothing clicked
 
 
@@ -424,7 +433,7 @@ def test_locate_reports_not_found_cleanly(monkeypatch):
     from lib import vision
     monkeypatch.setattr(vision, "_capture_screen",
                         lambda: Image.new("RGB", (800, 600)))
-    monkeypatch.setattr(vision, "_ask_point", lambda img, t: {"found": False})
+    monkeypatch.setattr(vision, "_grid_pick", lambda img, t, c, r: None)
     out = vision.locate("a purple unicorn")
     assert out["ok"] and out["found"] is False
 

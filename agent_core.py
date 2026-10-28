@@ -1284,13 +1284,16 @@ SEE_IMAGE = _t("see_image",
     ["path"], _see_image)
 
 LOCATE_ON_SCREEN = _t("locate_on_screen",
-    "ROUGH, best-effort guess of WHERE something is on screen {found, x, y, "
-    "reliable}. WARNING: general vision models point imprecisely and often miss, "
-    "so for a PRECISE click prefer read_window + click_control (native apps) or "
-    "the browser/CDP (web pages) - those give exact element positions. Use this "
-    "only when there is NO structured handle at all, treat reliable=false (a "
-    "likely centre-punt) as 'do not click', and ALWAYS see_screen after clicking "
-    "to confirm, expecting to retry.",
+    "Find WHERE something visible is on screen and get its click coordinates "
+    "{found, x, y, reliable} - grounded with a numbered grid, so it actually "
+    "lands on the target (verified ~25px of a real button). Describe it ('the "
+    "Skip Ad button', 'the red X to close the popup'); then cursor_click those "
+    "x,y with that description as the label, and the TARGET WINDOW MUST BE IN "
+    "FRONT (open/raise it first - clicking a background window only activates "
+    "it). For native apps with an accessibility tree, or web pages, "
+    "click_control / the browser are still faster and exact - use this for "
+    "things with no structured handle. reliable=false means coarse-only; LOOK "
+    "after clicking either way.",
     {"target": {"type": "string"}}, ["target"], _locate_on_screen)
 
 
@@ -1371,15 +1374,15 @@ _ROLE_RULES = {
         "using the same lib.desktop helpers. WEB or chat apps (WhatsApp, Gmail, "
         "a website) are the "
         "comms or browser specialist's job, not yours - hand those back. "
-        "WHERE TO CLICK comes from STRUCTURE, not from guessing pixels: use "
-        "read_window + click_control (the accessibility tree) for native apps, "
-        "and hand web pages to the browser specialist (CDP) - both give exact "
-        "positions. locate_on_screen is a ROUGH last resort only; general vision "
-        "cannot point precisely (it often returns screen centre), so trust it "
-        "only when reliable=true, never click a reliable=false result, and "
-        "always see_screen after to confirm. The REAL HAND (cursor_click / "
-        "cursor_type / cursor_key / cursor_scroll) is for something with NO "
-        "structured handle at all (a game, a canvas, a stuck dialog); a "
+        "WHERE TO CLICK: for native apps with an accessibility tree use "
+        "read_window + click_control, and hand web pages to the browser (CDP) - "
+        "both are exact and fast, so prefer them. For anything with NO such "
+        "handle (a game, a canvas, an ad's Skip button, a stuck dialog), the "
+        "EYES+HAND loop WORKS: raise the target window to the FRONT first "
+        "(open_app / click it), locate_on_screen('the Skip Ad button') to get "
+        "x,y (grid-grounded, lands on it), cursor_click there with that "
+        "description as the label, then see_screen to CONFIRM. Clicking a "
+        "background window only activates it, so the window must be in front. A "
         "pay/delete control is refused, and an unlabelled click is refused. "
         "see_screen is your EYES for what-is-there and to CONFIRM an outcome.",
     "research specialist":

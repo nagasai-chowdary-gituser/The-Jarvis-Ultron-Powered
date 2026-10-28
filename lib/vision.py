@@ -72,76 +72,115 @@ def see_screen(question: str = "", window: str = "") -> dict:
         return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
 
 
-def _ask_point(img, target: str) -> dict:
-    """Ask the model to point at `target` in THIS image. Returns {found,x,y,what}
-    in the image's own pixel coordinates, or {found: False}."""
+# ── visual grounding by SET-OF-MARKS (a numbered grid) ────────────────────────
+# A general vision model cannot regress a raw pixel coordinate (gpt-4o-mini
+# punted to the image centre every time). But it CAN pick a labelled cell out of
+# a grid drawn on the image - that is a classification, which it does well. So we
+# draw a numbered grid, ask which cell holds the target, then zoom into that cell
+# and ask again on a finer grid. Coarse cell -> fine cell gives real precision
+# with no new dependency (just PIL drawing).
+
+def _draw_grid(img, cols: int, rows: int):
+    """Return (image with a numbered grid drawn on it, {label: (x0,y0,x1,y1)})."""
+    from PIL import ImageDraw, ImageFont
+    im = img.convert("RGB").copy()
+    d = ImageDraw.Draw(im)
+    w, h = im.size
+    cw, ch = w / cols, h / rows
+    try:
+        font = ImageFont.truetype("arial.ttf", max(13, int(min(cw, ch) * 0.3)))
+    except Exception:
+        font = ImageFont.load_default()
+    boxes: dict[str, tuple] = {}
+    n = 0
+    for ry in range(rows):
+        for cxi in range(cols):
+            n += 1
+            x0, y0 = cxi * cw, ry * ch
+            x1, y1 = x0 + cw, y0 + ch
+            boxes[str(n)] = (x0, y0, x1, y1)
+            d.rectangle([x0, y0, x1, y1], outline=(255, 40, 40), width=1)
+            label, lx, ly = str(n), x0 + cw / 2, y0 + ch / 2
+            try:
+                tb = d.textbbox((0, 0), label, font=font)
+                tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            except Exception:
+                tw, th = 10, 12
+            d.rectangle([lx - tw / 2 - 3, ly - th / 2 - 2,
+                         lx + tw / 2 + 3, ly + th / 2 + 2], fill=(255, 235, 0))
+            d.text((lx - tw / 2, ly - th / 2 - 1), label, fill=(0, 0, 0), font=font)
+    return im, boxes
+
+
+def _grid_pick(img, target: str, cols: int, rows: int):
+    """Ask which numbered cell holds `target`. Returns that cell's box in img
+    coords, or None."""
     import json as _json
-    w, h = img.size
+    marked, boxes = _draw_grid(img, cols, rows)
     prompt = (
-        f"This image is {w} pixels wide and {h} tall. Point at: {target}. Return "
-        'ONLY JSON: {"found": true|false, "x": <int>, "y": <int>, '
-        '"what": "<what is there>"} where x,y are the CENTRE of it in pixels of '
-        "THIS image. If it is not visible, found=false.")
-    raw = _ask(img, prompt)
+        f"A grid of numbered yellow cells (1 to {cols * rows}, numbered "
+        f"left-to-right then top-to-bottom) is drawn over this image. Which "
+        f"SINGLE numbered cell is centred on (or most contains) {target}? "
+        'Return ONLY JSON: {"found": true|false, "cell": <number>}.')
+    raw = _ask(marked, prompt)
     try:
         a, b = raw.find("{"), raw.rfind("}")
         obj = _json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
     except Exception:
         obj = {}
     if not obj.get("found"):
-        return {"found": False}
-    return {"found": True, "x": float(obj.get("x", 0)),
-            "y": float(obj.get("y", 0)), "what": str(obj.get("what", ""))[:120]}
+        return None
+    return boxes.get(str(obj.get("cell")))
 
 
 def locate(target: str) -> dict:
     """Find a described element on screen and return its pixel (x, y) in the
-    CURSOR's coordinate space, so cursor_click can use it directly. The eyes
+    CURSOR's coordinate space, so cursor_click can use it directly - the eyes
     telling the hand where to go.
 
-    TWO PASSES, because a single-shot point from a general vision model is
-    imprecise (verified live: it named the right button but pointed ~15% off, so
-    the click missed). COARSE: point at it in the whole (downscaled) screen.
-    FINE: crop a large region around that point from the FULL-RES capture and
-    point again - the target is now big in frame, which is where accuracy comes
-    from. All coordinates stay in the capture's PHYSICAL pixels until the final
-    step converts to the cursor's logical space (so DPI scaling is handled once).
-    Still best-effort: always LOOK after clicking."""
+    SET-OF-MARKS, two levels. A coarse numbered grid over the whole screen picks
+    the cell holding the target; a finer grid over a crop of that cell pins it
+    down. Coordinates stay in the capture's PHYSICAL pixels until the final step
+    converts to the cursor's logical space (DPI handled once). Still verify with
+    see_screen after clicking."""
     try:
         grab = _capture_screen()
     except Exception as e:
         return {"ok": False, "error": f"could not capture: {type(e).__name__}: {e}"}
     cap_w, cap_h = grab.size
+
     try:
-        # COARSE on the whole screen
         ds = _downscale(grab)
-        coarse = _ask_point(ds, target)
+        cell = _grid_pick(ds, target, 6, 4)          # COARSE
     except Exception as e:
         return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
-    if not coarse.get("found"):
+    if cell is None:
         return {"ok": True, "found": False,
                 "note": f"{target!r} is not visible on screen right now."}
 
-    # coarse point -> physical capture pixels
-    px = coarse["x"] * cap_w / max(1, ds.size[0])
-    py = coarse["y"] * cap_h / max(1, ds.size[1])
-    what = coarse.get("what", "")
+    # coarse cell -> physical pixels (centre + size)
+    sx, sy = cap_w / ds.size[0], cap_h / ds.size[1]
+    px = (cell[0] + cell[2]) / 2 * sx
+    py = (cell[1] + cell[3]) / 2 * sy
+    cellw, cellh = (cell[2] - cell[0]) * sx, (cell[3] - cell[1]) * sy
+    reliable = True
 
-    # FINE: crop a generous region (big enough to hold the target even if the
-    # coarse point was off) and point again, zoomed in.
+    # FINE: crop a region a bit larger than the coarse cell and grid it again.
     try:
-        cw, ch = int(cap_w * 0.45), int(cap_h * 0.45)
+        cw, ch = min(cap_w, cellw * 1.8), min(cap_h, cellh * 1.8)
         left = int(min(max(px - cw / 2, 0), max(0, cap_w - cw)))
         top = int(min(max(py - ch / 2, 0), max(0, cap_h - ch)))
-        crop = grab.crop((left, top, left + cw, top + ch))
-        cds = _downscale(crop)
-        fine = _ask_point(cds, target)
-        if fine.get("found"):
-            px = left + fine["x"] * crop.size[0] / max(1, cds.size[0])
-            py = top + fine["y"] * crop.size[1] / max(1, cds.size[1])
-            what = fine.get("what", what)
+        crop = grab.crop((left, top, int(left + cw), int(top + ch)))
+        cds = _downscale(crop, max_side=900)
+        fine = _grid_pick(cds, target, 5, 4)
+        if fine is not None:
+            fx = (fine[0] + fine[2]) / 2 * crop.size[0] / cds.size[0]
+            fy = (fine[1] + fine[3]) / 2 * crop.size[1] / cds.size[1]
+            px, py = left + fx, top + fy
+        else:
+            reliable = False                         # coarse only: less precise
     except Exception:
-        pass                                    # fine pass is a refinement, not required
+        reliable = False
 
     try:
         from lib import cursor
@@ -150,22 +189,11 @@ def locate(target: str) -> dict:
         y = int(max(0, min(py * h_scr / max(1, cap_h), h_scr - 1)))
     except Exception as e:
         return {"ok": False, "error": f"scaling: {type(e).__name__}: {e}"}
-
-    # HONESTY: general vision models (gpt-4o-mini here) often PUNT to the image
-    # centre when they cannot truly ground a point - verified live, it returned
-    # dead-centre every trial while naming the target correctly. Flag that, so
-    # the caller does not click a centre-punt as if it were the real location.
-    near_centre = (abs(x - w_scr / 2) < w_scr * 0.06
-                   and abs(y - h_scr / 2) < h_scr * 0.06)
-    note = ("Best-effort only - vision pointing is imprecise; click, then LOOK "
-            "to confirm, and expect to retry.")
-    if near_centre:
-        note = ("LOW CONFIDENCE - this looks like a centre-punt (the model could "
-                "not truly locate it). Do NOT click it blindly; prefer the "
-                "accessibility tree (read_window/click_control) or the browser "
-                "(CDP) for a precise click.")
-    return {"ok": True, "found": True, "x": x, "y": y, "what": str(what)[:120],
-            "reliable": not near_centre, "note": note}
+    return {"ok": True, "found": True, "x": x, "y": y, "what": str(target)[:120],
+            "reliable": reliable,
+            "note": ("Located by grid. Click, then see_screen to confirm."
+                     if reliable else
+                     "Coarse location only - less precise; LOOK after clicking.")}
 
 
 def see_image(path: str, question: str = "") -> dict:

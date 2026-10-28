@@ -70,16 +70,9 @@ def main() -> None:
     print("LOOK   see_screen ->", ans[:140])
     print("LOOK   confirmed the button is on screen:", bool(look_ok))
 
-    # HAND (must pass): click the KNOWN coordinate -----------------------------
-    cursor.click(cx, cy)
-    for _ in range(25):
-        root.update(); time.sleep(0.02)
-    hand_ok = clicked["n"] >= 1
-    print("HAND   real click at known coord fired the control:", hand_ok)
-
-    # GROUND (report only): how close does vision pointing get? ----------------
-    clicked["n"] = 0
+    # EYES-GROUND: grid grounding points at the button -------------------------
     loc = vision.locate("the big green CLICK ME button")
+    inside = False
     if loc.get("found"):
         inside = l <= loc["x"] <= r and t <= loc["y"] <= b
         off = ((loc["x"] - cx) ** 2 + (loc["y"] - cy) ** 2) ** 0.5
@@ -87,14 +80,22 @@ def main() -> None:
               f"| button centre ({cx},{cy}) | inside={inside} off_by~{off:.0f}px")
     else:
         print("GROUND locate -> not found:", loc.get("error") or loc.get("note"))
-    print("GROUND (report only - Jarvis uses the accessibility tree/CDP for "
-          "precise clicks, not this)")
+
+    # HAND: raise the window to the FRONT, then click where the eyes said -------
+    root.lift(); root.focus_force(); root.update(); time.sleep(0.25)
+    if loc.get("found"):
+        cursor.click(int(loc["x"]), int(loc["y"]))
+        for _ in range(30):
+            root.update(); time.sleep(0.02)
+    hand_ok = clicked["n"] >= 1
+    print("HAND   click at the LOCATED point fired the control:", hand_ok)
 
     cursor.move(*start)
     root.destroy()
-    print("\nRESULT:", "PASS - the trio's eyes (confirm) and hand work."
-          if (look_ok and hand_ok) else
-          "CHECK - LOOK or HAND did not pass; paste all of this back.")
+    ok = look_ok and inside and hand_ok
+    print("\nRESULT:", "PASS - the full trio works: eyes confirm + locate, hand "
+          "clicks the located point." if ok else
+          "CHECK - a line above did not pass; paste all of this back.")
 
 
 if __name__ == "__main__":
