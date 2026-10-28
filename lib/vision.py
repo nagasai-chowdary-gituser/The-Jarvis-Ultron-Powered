@@ -72,52 +72,100 @@ def see_screen(question: str = "", window: str = "") -> dict:
         return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
 
 
-def locate(target: str) -> dict:
-    """Find a described element on screen and return its pixel (x, y) in the
-    CURSOR's coordinate space, so cursor_click can use it directly. This is the
-    eyes telling the hand where to go.
-
-    Best-effort: gpt-4o-mini points at prominent things well, small ones less so,
-    so the caller should LOOK again after clicking. One scale factor carries both
-    the downscale and any display-DPI difference: the model answers in the
-    downscaled image's pixels, and we map those straight onto the cursor's
-    width/height (the full-resolution size cancels out)."""
+def _ask_point(img, target: str) -> dict:
+    """Ask the model to point at `target` in THIS image. Returns {found,x,y,what}
+    in the image's own pixel coordinates, or {found: False}."""
     import json as _json
-    try:
-        img = _capture_screen()
-    except Exception as e:
-        return {"ok": False, "error": f"could not capture: {type(e).__name__}: {e}"}
-    ds = _downscale(img)
-    w_ds, h_ds = ds.size
+    w, h = img.size
     prompt = (
-        f"This screenshot is {w_ds} pixels wide and {h_ds} tall. Find this on "
-        f"it: {target}. Return ONLY JSON: "
-        '{"found": true|false, "x": <int>, "y": <int>, "what": "<what is there>"} '
-        "where x,y are the CENTRE of it in pixels of THIS image. If it is not "
-        "visible, found=false.")
-    try:
-        raw = _ask(ds, prompt)
-    except Exception as e:
-        return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
+        f"This image is {w} pixels wide and {h} tall. Point at: {target}. Return "
+        'ONLY JSON: {"found": true|false, "x": <int>, "y": <int>, '
+        '"what": "<what is there>"} where x,y are the CENTRE of it in pixels of '
+        "THIS image. If it is not visible, found=false.")
+    raw = _ask(img, prompt)
     try:
         a, b = raw.find("{"), raw.rfind("}")
         obj = _json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
     except Exception:
         obj = {}
     if not obj.get("found"):
+        return {"found": False}
+    return {"found": True, "x": float(obj.get("x", 0)),
+            "y": float(obj.get("y", 0)), "what": str(obj.get("what", ""))[:120]}
+
+
+def locate(target: str) -> dict:
+    """Find a described element on screen and return its pixel (x, y) in the
+    CURSOR's coordinate space, so cursor_click can use it directly. The eyes
+    telling the hand where to go.
+
+    TWO PASSES, because a single-shot point from a general vision model is
+    imprecise (verified live: it named the right button but pointed ~15% off, so
+    the click missed). COARSE: point at it in the whole (downscaled) screen.
+    FINE: crop a large region around that point from the FULL-RES capture and
+    point again - the target is now big in frame, which is where accuracy comes
+    from. All coordinates stay in the capture's PHYSICAL pixels until the final
+    step converts to the cursor's logical space (so DPI scaling is handled once).
+    Still best-effort: always LOOK after clicking."""
+    try:
+        grab = _capture_screen()
+    except Exception as e:
+        return {"ok": False, "error": f"could not capture: {type(e).__name__}: {e}"}
+    cap_w, cap_h = grab.size
+    try:
+        # COARSE on the whole screen
+        ds = _downscale(grab)
+        coarse = _ask_point(ds, target)
+    except Exception as e:
+        return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
+    if not coarse.get("found"):
         return {"ok": True, "found": False,
                 "note": f"{target!r} is not visible on screen right now."}
+
+    # coarse point -> physical capture pixels
+    px = coarse["x"] * cap_w / max(1, ds.size[0])
+    py = coarse["y"] * cap_h / max(1, ds.size[1])
+    what = coarse.get("what", "")
+
+    # FINE: crop a generous region (big enough to hold the target even if the
+    # coarse point was off) and point again, zoomed in.
+    try:
+        cw, ch = int(cap_w * 0.45), int(cap_h * 0.45)
+        left = int(min(max(px - cw / 2, 0), max(0, cap_w - cw)))
+        top = int(min(max(py - ch / 2, 0), max(0, cap_h - ch)))
+        crop = grab.crop((left, top, left + cw, top + ch))
+        cds = _downscale(crop)
+        fine = _ask_point(cds, target)
+        if fine.get("found"):
+            px = left + fine["x"] * crop.size[0] / max(1, cds.size[0])
+            py = top + fine["y"] * crop.size[1] / max(1, cds.size[1])
+            what = fine.get("what", what)
+    except Exception:
+        pass                                    # fine pass is a refinement, not required
+
     try:
         from lib import cursor
         w_scr, h_scr = cursor.screen_size()
-        xd, yd = float(obj.get("x", 0)), float(obj.get("y", 0))
-        x = int(max(0, min(xd * w_scr / max(1, w_ds), w_scr - 1)))
-        y = int(max(0, min(yd * h_scr / max(1, h_ds), h_scr - 1)))
+        x = int(max(0, min(px * w_scr / max(1, cap_w), w_scr - 1)))
+        y = int(max(0, min(py * h_scr / max(1, cap_h), h_scr - 1)))
     except Exception as e:
         return {"ok": False, "error": f"scaling: {type(e).__name__}: {e}"}
-    return {"ok": True, "found": True, "x": x, "y": y,
-            "what": str(obj.get("what", ""))[:120],
-            "note": "Click here, then LOOK again to confirm it did what you meant."}
+
+    # HONESTY: general vision models (gpt-4o-mini here) often PUNT to the image
+    # centre when they cannot truly ground a point - verified live, it returned
+    # dead-centre every trial while naming the target correctly. Flag that, so
+    # the caller does not click a centre-punt as if it were the real location.
+    near_centre = (abs(x - w_scr / 2) < w_scr * 0.06
+                   and abs(y - h_scr / 2) < h_scr * 0.06)
+    note = ("Best-effort only - vision pointing is imprecise; click, then LOOK "
+            "to confirm, and expect to retry.")
+    if near_centre:
+        note = ("LOW CONFIDENCE - this looks like a centre-punt (the model could "
+                "not truly locate it). Do NOT click it blindly; prefer the "
+                "accessibility tree (read_window/click_control) or the browser "
+                "(CDP) for a precise click.")
+    return {"ok": True, "found": True, "x": x, "y": y, "what": str(what)[:120],
+            "reliable": not near_centre, "note": note}
 
 
 def see_image(path: str, question: str = "") -> dict:

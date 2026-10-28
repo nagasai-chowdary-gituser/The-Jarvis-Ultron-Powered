@@ -350,48 +350,53 @@ def test_cursor_key_presses_a_chord(db, monkeypatch):
 
 # ── the trio: eyes locate, hand clicks ────────────────────────────────────────
 
-def test_locate_scales_model_coords_into_cursor_space(monkeypatch):
+def _mock_point(monkeypatch, fx, fy, what):
+    """Make _ask_point return a point at (fx, fy) fractions of whatever image it
+    is given - stable across the coarse and fine passes."""
     from PIL import Image
 
     from lib import cursor, vision
     monkeypatch.setattr(vision, "_capture_screen",
-                        lambda: Image.new("RGB", (1000, 800)))
-    monkeypatch.setattr(vision, "_ask",
-                        lambda img, q: '{"found": true, "x": 500, "y": 400,'
-                                       ' "what": "Skip Ad"}')
-    monkeypatch.setattr(cursor, "screen_size", lambda: (2000, 1600))
+                        lambda: Image.new("RGB", (1920, 1200)))
+    monkeypatch.setattr(cursor, "screen_size", lambda: (1536, 960))
+    monkeypatch.setattr(vision, "_ask_point",
+                        lambda img, t: {"found": True, "x": img.size[0] * fx,
+                                        "y": img.size[1] * fy, "what": what})
+
+
+def test_locate_returns_bounded_coords_when_found(monkeypatch):
+    from lib import vision
+    _mock_point(monkeypatch, 0.2, 0.2, "Skip Ad")      # clearly off-centre
     out = vision.locate("the Skip Ad button")
-    # 500/1000 of the way across a 2000-wide screen = 1000; 400/800 of 1600 = 800
-    assert out["ok"] and out["found"] and out["x"] == 1000 and out["y"] == 800
-    assert out["what"] == "Skip Ad"
+    assert out["ok"] and out["found"] and out["reliable"] is True
+    assert 0 <= out["x"] < 1536 and 0 <= out["y"] < 960   # inside the screen
+
+
+def test_locate_flags_a_centre_punt_as_unreliable(monkeypatch):
+    # The real failure mode found live: the model returns dead-centre when it
+    # cannot truly ground, so that must be marked NOT reliable.
+    from lib import vision
+    _mock_point(monkeypatch, 0.5, 0.5, "button")
+    out = vision.locate("the button")
+    assert out["found"] and out["reliable"] is False
+    assert "LOW CONFIDENCE" in out["note"]
 
 
 def test_trio_loop_locate_then_guarded_click_then_look(db, monkeypatch):
-    """End-to-end wiring of the trio (not isolated units): the eyes' coordinates
-    flow into a GUARDED click, and the confirm glance runs. Model + OS stubbed;
-    the coordinate flow, the guard, and the loop order are real."""
-    from PIL import Image
-
+    """End-to-end wiring of the trio: the eyes' coordinates flow into a GUARDED
+    click, and the confirm glance runs. Model + OS stubbed; the coordinate flow,
+    the guard, and the loop order are real."""
     from lib import cursor, vision
-
-    # EYES: locate a benign target -> coordinates
-    monkeypatch.setattr(vision, "_capture_screen",
-                        lambda: Image.new("RGB", (1000, 800)))
-    monkeypatch.setattr(vision, "_ask",
-                        lambda img, q: '{"found": true, "x": 400, "y": 300,'
-                                       ' "what": "Skip Ad button"}')
-    monkeypatch.setattr(cursor, "screen_size", lambda: (1000, 800))
+    _mock_point(monkeypatch, 0.2, 0.2, "Skip Ad button")
     loc = agent_core._locate_on_screen({"target": "the Skip Ad button"}, _ctx())
-    assert loc["found"] and (loc["x"], loc["y"]) == (400, 300)
+    assert loc["found"] and 0 <= loc["x"] < 1536 and 0 <= loc["y"] < 960
 
-    # HAND: those exact coordinates go into a guarded click (cursor stubbed)
     clicked = []
     monkeypatch.setattr(cursor, "click", lambda x, y, **k: clicked.append((x, y)))
     clk = agent_core._cursor_click(
         {"x": loc["x"], "y": loc["y"], "label": loc["what"]}, _ctx())
-    assert clk["ok"] and clicked == [(400, 300)]      # eyes -> hand, in bounds
+    assert clk["ok"] and clicked == [(loc["x"], loc["y"])]   # eyes -> hand
 
-    # LOOK: the confirm glance runs before any claim
     monkeypatch.setattr(vision, "see_screen",
                         lambda q="", w="": {"ok": True,
                                             "answer": "The video is playing, no ad."})
@@ -403,15 +408,8 @@ def test_trio_loop_locate_then_guarded_click_then_look(db, monkeypatch):
 def test_trio_loop_guard_still_fires_on_a_located_payment_button(db, monkeypatch):
     """If the eyes land on a Pay button, the click is still refused - the loop
     does not launder a dangerous target."""
-    from PIL import Image
-
     from lib import cursor, vision
-    monkeypatch.setattr(vision, "_capture_screen",
-                        lambda: Image.new("RGB", (1000, 800)))
-    monkeypatch.setattr(vision, "_ask",
-                        lambda img, q: '{"found": true, "x": 500, "y": 500,'
-                                       ' "what": "Buy now button"}')
-    monkeypatch.setattr(cursor, "screen_size", lambda: (1000, 800))
+    _mock_point(monkeypatch, 0.3, 0.3, "Buy now button")
     clicked = []
     monkeypatch.setattr(cursor, "click", lambda *a, **k: clicked.append(a))
     loc = agent_core._locate_on_screen({"target": "the purchase button"}, _ctx())
@@ -426,7 +424,7 @@ def test_locate_reports_not_found_cleanly(monkeypatch):
     from lib import vision
     monkeypatch.setattr(vision, "_capture_screen",
                         lambda: Image.new("RGB", (800, 600)))
-    monkeypatch.setattr(vision, "_ask", lambda img, q: '{"found": false}')
+    monkeypatch.setattr(vision, "_ask_point", lambda img, t: {"found": False})
     out = vision.locate("a purple unicorn")
     assert out["ok"] and out["found"] is False
 

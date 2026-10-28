@@ -1284,11 +1284,13 @@ SEE_IMAGE = _t("see_image",
     ["path"], _see_image)
 
 LOCATE_ON_SCREEN = _t("locate_on_screen",
-    "Find WHERE something is on screen and get its click coordinates - the eyes "
-    "that tell the hand where to click. Describe the target ('the Skip Ad "
-    "button', 'the red X to close the popup'); returns {found, x, y}. Then pass "
-    "x,y to cursor_click with that same description as the label. Returns "
-    "found=false when it is not visible.",
+    "ROUGH, best-effort guess of WHERE something is on screen {found, x, y, "
+    "reliable}. WARNING: general vision models point imprecisely and often miss, "
+    "so for a PRECISE click prefer read_window + click_control (native apps) or "
+    "the browser/CDP (web pages) - those give exact element positions. Use this "
+    "only when there is NO structured handle at all, treat reliable=false (a "
+    "likely centre-punt) as 'do not click', and ALWAYS see_screen after clicking "
+    "to confirm, expecting to retry.",
     {"target": {"type": "string"}}, ["target"], _locate_on_screen)
 
 
@@ -1369,15 +1371,17 @@ _ROLE_RULES = {
         "using the same lib.desktop helpers. WEB or chat apps (WhatsApp, Gmail, "
         "a website) are the "
         "comms or browser specialist's job, not yours - hand those back. "
-        "LAST RESORT, the REAL HAND (eyes + hand together): for something no "
-        "structured tool can reach (a game, a canvas, an ad's Skip button, a "
-        "stuck dialog), the loop is LOCATE -> CLICK -> LOOK: call "
-        "locate_on_screen('the Skip Ad button') to get x,y, then cursor_click "
-        "there with that same description as the label, then see_screen to "
-        "CONFIRM it did what you meant before reporting. Also cursor_type / "
-        "cursor_key / cursor_scroll. A pay/delete control is refused. Try the "
-        "accessibility tree FIRST - the hand is for when there is no handle to "
-        "grab.",
+        "WHERE TO CLICK comes from STRUCTURE, not from guessing pixels: use "
+        "read_window + click_control (the accessibility tree) for native apps, "
+        "and hand web pages to the browser specialist (CDP) - both give exact "
+        "positions. locate_on_screen is a ROUGH last resort only; general vision "
+        "cannot point precisely (it often returns screen centre), so trust it "
+        "only when reliable=true, never click a reliable=false result, and "
+        "always see_screen after to confirm. The REAL HAND (cursor_click / "
+        "cursor_type / cursor_key / cursor_scroll) is for something with NO "
+        "structured handle at all (a game, a canvas, a stuck dialog); a "
+        "pay/delete control is refused, and an unlabelled click is refused. "
+        "see_screen is your EYES for what-is-there and to CONFIRM an outcome.",
     "research specialist":
         "Search with web_search, then read pages with web_fetch. When you need "
         "to read SEVERAL pages, request them in ONE step (several web_fetch "
