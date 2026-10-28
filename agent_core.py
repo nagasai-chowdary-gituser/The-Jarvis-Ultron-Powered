@@ -205,7 +205,7 @@ def guard(tool: Tool, args: dict, ctx: Ctx) -> dict | None:
 # concurrent reads of it would race. Writes are never here.
 _READ_ONLY_FUNCS = {"web_search", "web_fetch", "recall", "stats", "processes",
                     "list_windows", "read_window", "list_apps",
-                    "recent_activity"}
+                    "recent_activity", "screen_info"}
 _READ_ONLY_MCP = {"read_file", "read_text_file", "read_multiple_files",
                   "get_file_info", "list_directory", "list_directory_with_sizes",
                   "directory_tree", "search_files", "list_allowed_directories"}
@@ -703,6 +703,93 @@ def _call_me(args, ctx) -> dict:
                         "Boss; never claim you called."}
 
 
+# ── the real hand: cursor + keyboard, with the money/delete guard ─────────────
+# Full control, but a click the model SEES as a pay/buy/delete control is
+# refused. The guard reads the `label` the vision pass gave it; a raw coordinate
+# carries no meaning, so requiring a label is what makes the refusal possible.
+
+_DELETE_CLICK_WORDS = (
+    "delete", "permanently delete", "remove permanently", "deactivate",
+    "close account", "uninstall", "erase", "factory reset", "wipe", "format ")
+
+
+def _click_guard(label: str) -> None:
+    if not label:
+        return
+    safety.money_check(label)             # raises Blocked on pay/buy/checkout/...
+    low = label.lower()
+    for w in _DELETE_CLICK_WORDS:
+        if w in low:
+            raise Blocked(f"refused a destructive click: {label!r}",
+                          "I will not click a delete or a payment control.")
+
+
+def _cursor_click(args, ctx) -> dict:
+    label = (args.get("label") or "").strip()
+    try:
+        _click_guard(label)
+    except Blocked as b:
+        return {"ok": False, "status": "blocked", "error": b.reason,
+                "note": b.spoken}
+    from lib import cursor
+    try:
+        x, y = int(args.get("x")), int(args.get("y"))
+        cursor.click(x, y, button=str(args.get("button") or "left"),
+                     double=bool(args.get("double")))
+        return {"ok": True, "clicked": [x, y], "label": label or "(unlabelled)",
+                "note": "Clicked - now LOOK (see_screen) to confirm it did what "
+                        "you wanted before saying it worked."}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _cursor_type(args, ctx) -> dict:
+    text = args.get("text", "")
+    try:
+        safety.money_check(text)          # no typing card/payment details
+    except Blocked as b:
+        return {"ok": False, "status": "blocked", "error": b.reason,
+                "note": b.spoken}
+    from lib import cursor
+    try:
+        cursor.type_text(text)
+        if args.get("enter"):
+            cursor.press("enter")
+        return {"ok": True, "typed": (text or "")[:60]}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _cursor_key(args, ctx) -> dict:
+    from lib import cursor
+    combo = args.get("keys") or args.get("combo") or ""
+    try:
+        cursor.press(combo)
+        return {"ok": True, "pressed": combo}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _cursor_scroll(args, ctx) -> dict:
+    from lib import cursor
+    amount = int(args.get("amount") if args.get("amount") is not None else -3)
+    try:
+        cursor.scroll(amount)
+        return {"ok": True, "scrolled": amount}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _screen_info(args, ctx) -> dict:
+    from lib import cursor
+    try:
+        w, h = cursor.screen_size()
+        return {"ok": True, "width": w, "height": h, "cursor": cursor.cursor_pos(),
+                "note": "Click targets run 0..width across and 0..height down."}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def _ensure_browser(args, ctx) -> dict:
     """Make sure Jarvis's own Chrome is up with its debug port, so Playwright
     can attach. Never touches the owner's Chrome (see browser.py)."""
@@ -1034,6 +1121,41 @@ CALL_ME = _t("call_me",
     "ok=false the call did NOT happen; tell him why, never claim you called.",
     {"reason": {"type": "string"}}, ["reason"], _call_me)
 
+CURSOR_CLICK = _t("cursor_click",
+    "Click the mouse at a screen pixel - the REAL hand, for what no precise tool "
+    "can reach (a game, a canvas UI, an ad's Skip button, a stubborn dialog). "
+    "Prefer the browser/desktop structured tools when they can do it. ALWAYS "
+    "pass `label`: what you SEE you are clicking (from vision) - a click you "
+    "label as a pay/buy/delete control is refused. Get coordinates from vision "
+    "or screen_info, and LOOK after clicking to confirm.",
+    {"x": {"type": "integer"}, "y": {"type": "integer"},
+     "label": {"type": "string",
+               "description": "what you see you are clicking (required)"},
+     "button": {"type": "string", "enum": ["left", "right", "middle"]},
+     "double": {"type": "boolean"}},
+    ["x", "y", "label"], _cursor_click)
+
+CURSOR_TYPE = _t("cursor_type",
+    "Type text on the real keyboard wherever the focus is (use after cursor_click "
+    "put the cursor in a field). Payment/card details are refused. Set enter to "
+    "press Enter after.",
+    {"text": {"type": "string"}, "enter": {"type": "boolean"}},
+    ["text"], _cursor_type)
+
+CURSOR_KEY = _t("cursor_key",
+    "Press a key or chord on the real keyboard: 'enter', 'esc', 'ctrl+a', "
+    "'alt+F4', 'ctrl+shift+t'.",
+    {"keys": {"type": "string"}}, ["keys"], _cursor_key)
+
+CURSOR_SCROLL = _t("cursor_scroll",
+    "Scroll the mouse wheel. Positive is up, negative is down (e.g. -3).",
+    {"amount": {"type": "integer"}}, [], _cursor_scroll)
+
+SCREEN_INFO = _t("screen_info",
+    "The screen size and current cursor position, so you can choose click "
+    "coordinates. Read-only.",
+    {}, [], _screen_info)
+
 ENSURE_BROWSER = _t("ensure_browser",
     "Start Jarvis's own Chrome with its debug port so the browser can be "
     "driven. Call this once before browsing.",
@@ -1224,7 +1346,14 @@ _ROLE_RULES = {
         "per turn. For genuinely complex logic you may write one run_python "
         "using the same lib.desktop helpers. WEB or chat apps (WhatsApp, Gmail, "
         "a website) are the "
-        "comms or browser specialist's job, not yours - hand those back.",
+        "comms or browser specialist's job, not yours - hand those back. "
+        "LAST RESORT, the REAL HAND: for something no structured tool can reach "
+        "(a game, a canvas, an ad's Skip button, a stuck dialog), use "
+        "see_screen + screen_info to find the spot, then cursor_click / "
+        "cursor_type / cursor_key / cursor_scroll - and LOOK again to confirm it "
+        "worked. Always pass what you SEE as the click `label`; a pay/delete "
+        "control is refused. Try the accessibility tree FIRST - the hand is for "
+        "when there is no handle to grab.",
     "research specialist":
         "Search with web_search, then read pages with web_fetch. When you need "
         "to read SEVERAL pages, request them in ONE step (several web_fetch "
@@ -1343,7 +1472,9 @@ def build_team(force: bool = False) -> Agent:
     desktop = sub("desktop", "desktop specialist", "desktop",
                   [OPEN_APP, OPEN_CHROME_PROFILE, MEDIA, PROCESSES, STATS,
                    LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
-                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE, VERIFY_OUTCOME])
+                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE, VERIFY_OUTCOME,
+                   CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY, CURSOR_SCROLL,
+                   SCREEN_INFO])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
@@ -1356,7 +1487,9 @@ def build_team(force: bool = False) -> Agent:
     orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, MAKE_PPTX,
                    MAKE_DOCX, RECENT_ACTIVITY, CALL_ME, REMEMBER, RECALL,
                    SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
-                   READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN]
+                   READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN,
+                   CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY, CURSOR_SCROLL,
+                   SCREEN_INFO]
     # Crystallized skills become first-class tools - the whole point of saving
     # one is that next time it is a direct call, routed by its description. A
     # broken recipe file is skipped (parsed, not imported), never fatal.

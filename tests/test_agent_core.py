@@ -291,6 +291,51 @@ def test_call_me_reports_a_real_placed_call(db, monkeypatch):
     assert out["ok"] is True and out["sid"] == "CA123"
 
 
+# ── the real hand: full control, but guarded ──────────────────────────────────
+
+def test_cursor_click_refuses_a_payment_control(db, monkeypatch):
+    from lib import cursor
+    clicked = []
+    monkeypatch.setattr(cursor, "click", lambda *a, **k: clicked.append(a))
+    out = agent_core._cursor_click({"x": 10, "y": 20, "label": "Buy now"}, _ctx())
+    assert out["ok"] is False and out.get("status") == "blocked"
+    assert not clicked                       # the click never happened
+
+
+def test_cursor_click_refuses_a_delete_control(db, monkeypatch):
+    from lib import cursor
+    clicked = []
+    monkeypatch.setattr(cursor, "click", lambda *a, **k: clicked.append(a))
+    out = agent_core._cursor_click({"x": 1, "y": 1, "label": "Delete account"},
+                                   _ctx())
+    assert out["ok"] is False and not clicked
+
+
+def test_cursor_click_proceeds_on_a_safe_label(db, monkeypatch):
+    from lib import cursor
+    clicked = []
+    monkeypatch.setattr(cursor, "click", lambda x, y, **k: clicked.append((x, y)))
+    out = agent_core._cursor_click({"x": 100, "y": 200, "label": "Skip Ad"},
+                                   _ctx())
+    assert out["ok"] is True and clicked == [(100, 200)]
+
+
+def test_cursor_type_refuses_payment_details(db, monkeypatch):
+    from lib import cursor
+    typed = []
+    monkeypatch.setattr(cursor, "type_text", lambda t: typed.append(t))
+    out = agent_core._cursor_type({"text": "my card number is 4111 1111"}, _ctx())
+    assert out["ok"] is False and not typed
+
+
+def test_cursor_key_presses_a_chord(db, monkeypatch):
+    from lib import cursor
+    pressed = []
+    monkeypatch.setattr(cursor, "press", lambda c: pressed.append(c))
+    out = agent_core._cursor_key({"keys": "ctrl+a"}, _ctx())
+    assert out["ok"] and pressed == ["ctrl+a"]
+
+
 def test_fast_path_does_not_spend_on_learning(db, monkeypatch):
     """A fast-path turn answers a trivial, deterministic op - there is nothing
     durable to learn, so the background capture call must not fire."""
