@@ -71,6 +71,47 @@ def _unicode_key(ch: str, up: bool) -> _INPUT:
     return _INPUT(INPUT_KEYBOARD, _INUNION(ki=ki))
 
 
+# ── YIELD TO THE OWNER ────────────────────────────────────────────────────────
+# There is one physical pointer, so if the owner reaches for the mouse while
+# Jarvis is using it, they must not fight. Jarvis remembers where it last put the
+# pointer; before each action it checks whether the pointer has moved on its own.
+# If it has (and recently), the OWNER is driving, so Jarvis yields - it raises
+# UserActive and does nothing, leaving the mouse to him. A gap of more than
+# _YIELD_WINDOW_S means a fresh start (no recent Jarvis action to protect), so
+# the first action takes control without a false yield.
+
+class UserActive(Exception):
+    """The owner moved the mouse, so Jarvis yielded the cursor to him."""
+
+
+_last_set: tuple[int, int] | None = None
+_last_at: float = 0.0
+_YIELD_TOL = 8          # pixels the pointer may drift before it counts as the owner
+_YIELD_WINDOW_S = 4.0   # within this of Jarvis's last action, a jump means the owner
+
+
+def _note_set(x: int, y: int) -> None:
+    global _last_set, _last_at
+    _last_set = (int(x), int(y))
+    _last_at = time.time()
+
+
+def reset() -> None:
+    """Forget where the pointer was - call at the start of a fresh sequence."""
+    global _last_set
+    _last_set = None
+
+
+def _check_yield() -> None:
+    if _last_set is None or (time.time() - _last_at) > _YIELD_WINDOW_S:
+        return                                  # fresh start: take control, no yield
+    cx, cy = cursor_pos()
+    if abs(cx - _last_set[0]) > _YIELD_TOL or abs(cy - _last_set[1]) > _YIELD_TOL:
+        raise UserActive(
+            f"the mouse moved to ({cx},{cy}) on its own - you are using it, so I "
+            f"stopped. Tell me to continue and I'll pick it back up.")
+
+
 # ── geometry ──────────────────────────────────────────────────────────────────
 
 def screen_size() -> tuple[int, int]:
@@ -95,8 +136,10 @@ _BTN = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010),
 
 
 def move(x: int, y: int) -> None:
+    _check_yield()                         # did the owner grab the mouse? yield.
     x, y = _clamp(x, y)
     _user32.SetCursorPos(x, y)
+    _note_set(x, y)
 
 
 def click(x: int, y: int, button: str = "left", double: bool = False) -> None:
@@ -108,10 +151,12 @@ def click(x: int, y: int, button: str = "left", double: bool = False) -> None:
         time.sleep(0.02)
         _user32.mouse_event(up, 0, 0, 0, 0)
         time.sleep(0.04)
+    _note_set(x, y)
 
 
 def scroll(amount: int) -> None:
     """Positive scrolls up, negative down. One unit ≈ one notch."""
+    _check_yield()
     _user32.mouse_event(0x0800, 0, 0, int(amount) * 120, 0)   # MOUSEEVENTF_WHEEL
 
 
@@ -119,6 +164,7 @@ def scroll(amount: int) -> None:
 
 def type_text(text: str) -> None:
     """Type any text, unicode included, as real key events."""
+    _check_yield()                         # if the owner took the mouse, stop
     for ch in (text or ""):
         if ch == "\n":
             press("enter")
@@ -150,6 +196,7 @@ def _vk(part: str):
 
 def press(combo: str) -> None:
     """A key or a chord: 'enter', 'ctrl+a', 'alt+F4', 'ctrl+shift+t'."""
+    _check_yield()
     parts = [p for p in (combo or "").replace("-", "+").split("+") if p.strip()]
     vks = [v for v in (_vk(p) for p in parts) if v is not None]
     if not vks:

@@ -89,6 +89,16 @@ def open_app(name: str) -> dict:
 
     app = hits[0]
 
+    # ALREADY OPEN? Then do not launch a SECOND copy. "Open Paint" when Paint is
+    # already up used to spawn another window - which is how one request ended
+    # with two Paints. If a visible window already names this app, reuse it.
+    # (Not for WhatsApp - it needs its debugging port, handled below.)
+    if "whatsapp" not in app["name"].lower() and _window_named(app["name"]):
+        return {"ok": True, "launched": app["name"], "app_id": app["app_id"],
+                "verified": True, "already_open": True,
+                "note": f"{app['name']} is already open - using it instead of "
+                        f"opening a second window."}
+
     # WhatsApp is special: launching it the ordinary way gives an app Jarvis
     # cannot then drive, because the WebView2 debugging port is only opened by
     # lib.whatsapp.start_app(). Opening it any other way would mean "open
@@ -137,6 +147,36 @@ _LAUNCH_NOISE = {"explorer.exe", "conhost.exe", "backgroundtaskhost.exe",
                  "applicationframehost.exe", "startmenuexperiencehost.exe",
                  "searchhost.exe", "sihost.exe", "taskhostw.exe",
                  "wmiprvse.exe", "audiodg.exe", "ctfmon.exe"}
+
+
+def _window_named(app_name: str) -> bool:
+    """Is a visible window already showing this app? Matched on the title
+    containing the app's name (document apps title as 'file - Paint'), which is
+    enough to stop a duplicate launch for the common apps."""
+    frag = (app_name or "").lower().strip()
+    if len(frag) < 3:
+        return False
+    try:
+        import win32gui
+    except Exception:
+        return False
+    hit = []
+
+    def cb(h, _):
+        try:
+            if win32gui.IsWindowVisible(h):
+                t = win32gui.GetWindowText(h) or ""
+                if frag in t.lower():
+                    hit.append(t)
+        except Exception:
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(cb, None)
+    except Exception:
+        return False
+    return bool(hit)
 
 
 def _pid_set() -> set:

@@ -550,6 +550,36 @@ def spend_today(db_path: Path | None = None) -> float:
     return float(r["t"] or 0.0)
 
 
+def spend_summary(period: str = "today", db_path: Path | None = None) -> dict:
+    """The API bill for a period, from Jarvis's OWN spend log - no network. The
+    answer to 'how much did I spend today'. period: today | week | all | a date."""
+    import datetime
+    period = (period or "today").strip().lower()
+    if period in ("today", ""):
+        where, params = "WHERE day=?", (time.strftime("%Y-%m-%d"),)
+    elif period in ("week", "7d", "7days"):
+        since = (datetime.date.today() - datetime.timedelta(days=6)).isoformat()
+        where, params = "WHERE day>=?", (since,)
+    elif period in ("all", "total", "ever"):
+        where, params = "", ()
+    else:
+        where, params = "WHERE day=?", (period,)        # a specific YYYY-MM-DD
+    c = _conn(db_path)
+    try:
+        tot = c.execute(
+            f"SELECT COALESCE(SUM(usd),0) t, COUNT(*) n FROM spend {where}",
+            params).fetchone()
+        rows = c.execute(
+            f"SELECT model, COUNT(*) n, COALESCE(SUM(usd),0) usd FROM spend "
+            f"{where} GROUP BY model ORDER BY usd DESC", params).fetchall()
+    finally:
+        c.close()
+    return {"period": period, "total_usd": round(float(tot["t"] or 0), 4),
+            "calls": int(tot["n"] or 0),
+            "by_model": [{"model": r["model"], "calls": int(r["n"]),
+                          "usd": round(float(r["usd"] or 0), 4)} for r in rows]}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Outreach — every time Jarvis disturbs the Boss without being asked
 #

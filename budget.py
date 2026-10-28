@@ -274,8 +274,9 @@ class Budget:
         if verdict is Verdict.BLOCKED:
             return self.blocked_reason
         if verdict is Verdict.TIMEOUT:
-            return (f"I ran past the time limit ({self.deadline_s:.0f}s) with "
-                    f"{self.progress.count} thing(s) done. Here is how far I got.")
+            return (f"That took the full time I had for it ({self.deadline_s:.0f}s) "
+                    f"- I got {self.progress.count} step(s) done. Here is how far "
+                    f"I got; say the word and I'll keep going.")
         if verdict is Verdict.STUCK:
             if self.recoveries > self.recovery_budget:
                 return (f"I tried {self.recoveries} different ways and none of "
@@ -313,7 +314,12 @@ def for_request(text: str, task_id: int | None = None) -> Budget:
     heavy = any(w in t for w in (
         "research", "compare", "organise", "organize", "every", "all of",
         "then", "after that", "and also", "until", "fix", "debug",
-        "investigate", "summarise", "summarize", "download", "queue"))
+        "investigate", "summarise", "summarize", "download", "queue",
+        # Creative / on-screen DOING is slow (app launch, drawing, the cursor),
+        # so it must not be rationed to the chat-sized budget - a "draw me a
+        # smiley" that opened Paint used to hit the 60s limit.
+        "draw", "paint", "sketch", "design", "create", "make me", "make a",
+        "picture", "image", "build", "write a", "express"))
 
     if words <= 6 and not heavy:
         return Budget(deadline_s=60.0, max_barren_rounds=3,

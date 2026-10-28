@@ -438,6 +438,73 @@ def test_locate_reports_not_found_cleanly(monkeypatch):
     assert out["ok"] and out["found"] is False
 
 
+# ── review fixes: api bill, cursor yield, budget, no duplicate app ────────────
+
+def test_api_usage_reads_the_local_spend_log(db):
+    import state
+    state.record_spend("gpt-5.6-terra", 100, 0, 50, 0.0100)
+    state.record_spend("gpt-5.6-luna", 200, 0, 80, 0.0020)
+    out = agent_core._api_usage({"period": "today"}, _ctx())
+    assert out["ok"] and out["calls"] == 2
+    assert abs(out["total_usd"] - 0.012) < 1e-6
+    assert "terra" in out["report"]
+    assert "no browser" in out["note"].lower()        # never the browser/API
+
+
+def test_cursor_yields_when_the_owner_moves_the_mouse(monkeypatch):
+    import pytest as _pytest
+
+    from lib import cursor
+    cursor._note_set(100, 100)                         # Jarvis left it at 100,100
+    monkeypatch.setattr(cursor, "cursor_pos", lambda: (400, 400))  # owner moved it
+    with _pytest.raises(cursor.UserActive):
+        cursor._check_yield()
+
+
+def test_cursor_does_not_yield_on_tiny_drift(monkeypatch):
+    from lib import cursor
+    cursor._note_set(100, 100)
+    monkeypatch.setattr(cursor, "cursor_pos", lambda: (102, 101))  # within tolerance
+    cursor._check_yield()                              # must NOT raise
+
+
+def test_cursor_fresh_start_takes_control_without_yielding(monkeypatch):
+    from lib import cursor
+    cursor.reset()
+    monkeypatch.setattr(cursor, "cursor_pos", lambda: (999, 999))
+    cursor._check_yield()                              # no prior position -> no yield
+
+
+def test_cursor_click_tool_reports_a_yield_cleanly(db, monkeypatch):
+    from lib import cursor
+
+    def boom(*a, **k):
+        raise cursor.UserActive("you moved it")
+    monkeypatch.setattr(cursor, "click", boom)
+    out = agent_core._cursor_click({"x": 10, "y": 20, "label": "a button"}, _ctx())
+    assert out["ok"] is False and out["status"] == "yielded"
+
+
+def test_budget_gives_creative_tasks_real_time():
+    import budget
+    assert budget.for_request("draw it").deadline_s >= 400      # not the 60s tier
+    assert budget.for_request("paint me a smiley").deadline_s >= 400
+
+
+def test_open_app_does_not_launch_a_second_copy(monkeypatch):
+    import subprocess
+
+    from lib import desktop
+    monkeypatch.setattr(desktop, "installed_apps",
+                        lambda: [{"name": "Paint", "app_id": "Paint.App"}])
+    monkeypatch.setattr(desktop, "_window_named", lambda name: True)  # already open
+    launched = []
+    monkeypatch.setattr(subprocess, "Popen",
+                        lambda *a, **k: launched.append(a))
+    out = desktop.open_app("paint")
+    assert out["ok"] and out.get("already_open") and not launched   # no 2nd window
+
+
 def test_fast_path_does_not_spend_on_learning(db, monkeypatch):
     """A fast-path turn answers a trivial, deterministic op - there is nothing
     durable to learn, so the background capture call must not fire."""

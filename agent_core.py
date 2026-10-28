@@ -205,7 +205,7 @@ def guard(tool: Tool, args: dict, ctx: Ctx) -> dict | None:
 # concurrent reads of it would race. Writes are never here.
 _READ_ONLY_FUNCS = {"web_search", "web_fetch", "recall", "stats", "processes",
                     "list_windows", "read_window", "list_apps",
-                    "recent_activity", "screen_info"}
+                    "recent_activity", "screen_info", "api_usage"}
 _READ_ONLY_MCP = {"read_file", "read_text_file", "read_multiple_files",
                   "get_file_info", "list_directory", "list_directory_with_sizes",
                   "directory_tree", "search_files", "list_allowed_directories"}
@@ -577,6 +577,19 @@ def _whatsapp_read(args, ctx) -> dict:
                         "signed in, with its debug port up?"}
 
 
+def _api_usage(args, ctx) -> dict:
+    """Today's (or a period's) API spend, from Jarvis's OWN local log. Answers
+    'how much did I spend / the api bill' with NO browser and NO OpenAI call."""
+    s = state.spend_summary((args.get("period") or "today"))
+    parts = ", ".join(f"{m['model']} ${m['usd']:.4f}" for m in s["by_model"][:4])
+    spoken = (f"{s['period']}: about ${s['total_usd']:.4f} across {s['calls']} "
+              f"calls." if s["calls"] else f"{s['period']}: nothing spent yet.")
+    return {"ok": True, **s, "spoken": spoken,
+            "report": (f"API spend ({s['period']}): ${s['total_usd']:.4f} over "
+                       f"{s['calls']} calls" + (f" — {parts}" if parts else "")),
+            "note": "From the local spend log - no browser, no OpenAI API call."}
+
+
 def _recent_activity(args, ctx) -> dict:
     """What Jarvis ACTUALLY did recently - the real log, so a follow-up question
     is answered from fact, not invention."""
@@ -747,6 +760,8 @@ def _cursor_click(args, ctx) -> dict:
         return {"ok": True, "clicked": [x, y], "label": label or "(unlabelled)",
                 "note": "Clicked - now LOOK (see_screen) to confirm it did what "
                         "you wanted before saying it worked."}
+    except cursor.UserActive as y:
+        return {"ok": False, "status": "yielded", "note": str(y)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -764,6 +779,8 @@ def _cursor_type(args, ctx) -> dict:
         if args.get("enter"):
             cursor.press("enter")
         return {"ok": True, "typed": (text or "")[:60]}
+    except cursor.UserActive as y:
+        return {"ok": False, "status": "yielded", "note": str(y)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -774,6 +791,8 @@ def _cursor_key(args, ctx) -> dict:
     try:
         cursor.press(combo)
         return {"ok": True, "pressed": combo}
+    except cursor.UserActive as y:
+        return {"ok": False, "status": "yielded", "note": str(y)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -784,6 +803,8 @@ def _cursor_scroll(args, ctx) -> dict:
     try:
         cursor.scroll(amount)
         return {"ok": True, "scrolled": amount}
+    except cursor.UserActive as y:
+        return {"ok": False, "status": "yielded", "note": str(y)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -1099,6 +1120,13 @@ RECENT_ACTIVITY = _t("recent_activity",
     "took, or what went wrong. NEVER guess at your own activity - read it here.",
     {"limit": {"type": "integer"}}, [], _recent_activity)
 
+API_USAGE = _t("api_usage",
+    "The API spend / bill, from Jarvis's OWN local log - instant, no browser, no "
+    "OpenAI call. Use THIS for 'how much did I spend / today's api bill / usage "
+    "/ cost'; NEVER open a browser or hit the OpenAI API for it. period: 'today' "
+    "(default), 'week', or 'all'.",
+    {"period": {"type": "string"}}, [], _api_usage)
+
 MAKE_PPTX = _t("make_pptx",
     "Create a PowerPoint (.pptx) and SAVE it - built directly, so NO PowerPoint "
     "window opens and it is always written to disk. Use THIS for any deck; never "
@@ -1307,6 +1335,7 @@ _HONESTY = """WHAT COUNTS AS TRUE
 Say what a tool RETURNED, never what you intended. A message is sent when the send returned an id; a file exists when the write returned its size. If a tool failed, say it failed and why. If you did not read something, you do not know it. Never say you are monitoring or watching unless schedule_job returned an id THIS turn. The database word "pending" means a job is ACTIVE and queued, not broken - do not tell the Boss an active job is dead.
 MEASURE, DON'T ASSERT. Before you claim you downloaded or created a file, that something is running, or that a command succeeded, PROVE it with verify_outcome and report what it actually found - a file that is missing, empty, or the wrong type has NOT been produced. Do not report such an outcome done on the strength of a tool you hoped worked.
 KNOW WHAT YOU DID. To answer what you just did, how long it took, or what went wrong, call recent_activity and report from that real log - NEVER guess or say you have no log. If the Boss says 'call me', use call_me; if it returns ok=false the call did not happen - tell him why, never claim you called.
+SPEND / API BILL. For 'how much did I spend / the api bill / usage / cost today', call api_usage - it reads the local log instantly. NEVER open a browser or call the OpenAI API for the bill (that 403s); the answer is already on this machine.
 LOOK BEFORE YOU CLAIM AN ON-SCREEN RESULT. After acting on something you can only see - playing a video, clicking in an app - take one see_screen glance to confirm the REAL state before reporting. "I played the song" is only true when the song is actually playing; if an ad is on screen, say so (and skip/wait), do not report the song as playing."""
 
 ORCH_PROMPT = _IDENTITY + """
@@ -1516,8 +1545,8 @@ def build_team(force: bool = False) -> Agent:
     orch_tools = [agent_as_tool(a, client) for a in
                   (files, browser, desktop, research, comms, coder)]
     orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, MAKE_PPTX,
-                   MAKE_DOCX, RECENT_ACTIVITY, CALL_ME, REMEMBER, RECALL,
-                   SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
+                   MAKE_DOCX, RECENT_ACTIVITY, API_USAGE, CALL_ME, REMEMBER,
+                   RECALL, SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN,
                    LOCATE_ON_SCREEN, CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY,
                    CURSOR_SCROLL, SCREEN_INFO]
