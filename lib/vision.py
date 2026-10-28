@@ -72,6 +72,54 @@ def see_screen(question: str = "", window: str = "") -> dict:
         return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
 
 
+def locate(target: str) -> dict:
+    """Find a described element on screen and return its pixel (x, y) in the
+    CURSOR's coordinate space, so cursor_click can use it directly. This is the
+    eyes telling the hand where to go.
+
+    Best-effort: gpt-4o-mini points at prominent things well, small ones less so,
+    so the caller should LOOK again after clicking. One scale factor carries both
+    the downscale and any display-DPI difference: the model answers in the
+    downscaled image's pixels, and we map those straight onto the cursor's
+    width/height (the full-resolution size cancels out)."""
+    import json as _json
+    try:
+        img = _capture_screen()
+    except Exception as e:
+        return {"ok": False, "error": f"could not capture: {type(e).__name__}: {e}"}
+    ds = _downscale(img)
+    w_ds, h_ds = ds.size
+    prompt = (
+        f"This screenshot is {w_ds} pixels wide and {h_ds} tall. Find this on "
+        f"it: {target}. Return ONLY JSON: "
+        '{"found": true|false, "x": <int>, "y": <int>, "what": "<what is there>"} '
+        "where x,y are the CENTRE of it in pixels of THIS image. If it is not "
+        "visible, found=false.")
+    try:
+        raw = _ask(ds, prompt)
+    except Exception as e:
+        return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
+    try:
+        a, b = raw.find("{"), raw.rfind("}")
+        obj = _json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
+    except Exception:
+        obj = {}
+    if not obj.get("found"):
+        return {"ok": True, "found": False,
+                "note": f"{target!r} is not visible on screen right now."}
+    try:
+        from lib import cursor
+        w_scr, h_scr = cursor.screen_size()
+        xd, yd = float(obj.get("x", 0)), float(obj.get("y", 0))
+        x = int(max(0, min(xd * w_scr / max(1, w_ds), w_scr - 1)))
+        y = int(max(0, min(yd * h_scr / max(1, h_ds), h_scr - 1)))
+    except Exception as e:
+        return {"ok": False, "error": f"scaling: {type(e).__name__}: {e}"}
+    return {"ok": True, "found": True, "x": x, "y": y,
+            "what": str(obj.get("what", ""))[:120],
+            "note": "Click here, then LOOK again to confirm it did what you meant."}
+
+
 def see_image(path: str, question: str = "") -> dict:
     """Look at an image or a PDF page the Boss points at."""
     try:

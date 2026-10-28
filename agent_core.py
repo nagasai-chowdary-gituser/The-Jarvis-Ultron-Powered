@@ -1248,6 +1248,11 @@ def _see_screen(args, ctx) -> dict:
     return vision.see_screen(args.get("question", ""), args.get("window", ""))
 
 
+def _locate_on_screen(args, ctx) -> dict:
+    from lib import vision
+    return vision.locate(args.get("target", ""))
+
+
 def _see_image(args, ctx) -> dict:
     from lib import vision
     return vision.see_image(args.get("path", ""), args.get("question", ""))
@@ -1270,6 +1275,14 @@ SEE_IMAGE = _t("see_image",
     {"path": {"type": "string"}, "question": {"type": "string"}},
     ["path"], _see_image)
 
+LOCATE_ON_SCREEN = _t("locate_on_screen",
+    "Find WHERE something is on screen and get its click coordinates - the eyes "
+    "that tell the hand where to click. Describe the target ('the Skip Ad "
+    "button', 'the red X to close the popup'); returns {found, x, y}. Then pass "
+    "x,y to cursor_click with that same description as the label. Returns "
+    "found=false when it is not visible.",
+    {"target": {"type": "string"}}, ["target"], _locate_on_screen)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts
@@ -1280,7 +1293,8 @@ _IDENTITY = """You are Jarvis, a personal agent on your owner's own Windows mach
 _HONESTY = """WHAT COUNTS AS TRUE
 Say what a tool RETURNED, never what you intended. A message is sent when the send returned an id; a file exists when the write returned its size. If a tool failed, say it failed and why. If you did not read something, you do not know it. Never say you are monitoring or watching unless schedule_job returned an id THIS turn. The database word "pending" means a job is ACTIVE and queued, not broken - do not tell the Boss an active job is dead.
 MEASURE, DON'T ASSERT. Before you claim you downloaded or created a file, that something is running, or that a command succeeded, PROVE it with verify_outcome and report what it actually found - a file that is missing, empty, or the wrong type has NOT been produced. Do not report such an outcome done on the strength of a tool you hoped worked.
-KNOW WHAT YOU DID. To answer what you just did, how long it took, or what went wrong, call recent_activity and report from that real log - NEVER guess or say you have no log. If the Boss says 'call me', use call_me; if it returns ok=false the call did not happen - tell him why, never claim you called."""
+KNOW WHAT YOU DID. To answer what you just did, how long it took, or what went wrong, call recent_activity and report from that real log - NEVER guess or say you have no log. If the Boss says 'call me', use call_me; if it returns ok=false the call did not happen - tell him why, never claim you called.
+LOOK BEFORE YOU CLAIM AN ON-SCREEN RESULT. After acting on something you can only see - playing a video, clicking in an app - take one see_screen glance to confirm the REAL state before reporting. "I played the song" is only true when the song is actually playing; if an ad is on screen, say so (and skip/wait), do not report the song as playing."""
 
 ORCH_PROMPT = _IDENTITY + """
 
@@ -1347,13 +1361,15 @@ _ROLE_RULES = {
         "using the same lib.desktop helpers. WEB or chat apps (WhatsApp, Gmail, "
         "a website) are the "
         "comms or browser specialist's job, not yours - hand those back. "
-        "LAST RESORT, the REAL HAND: for something no structured tool can reach "
-        "(a game, a canvas, an ad's Skip button, a stuck dialog), use "
-        "see_screen + screen_info to find the spot, then cursor_click / "
-        "cursor_type / cursor_key / cursor_scroll - and LOOK again to confirm it "
-        "worked. Always pass what you SEE as the click `label`; a pay/delete "
-        "control is refused. Try the accessibility tree FIRST - the hand is for "
-        "when there is no handle to grab.",
+        "LAST RESORT, the REAL HAND (eyes + hand together): for something no "
+        "structured tool can reach (a game, a canvas, an ad's Skip button, a "
+        "stuck dialog), the loop is LOCATE -> CLICK -> LOOK: call "
+        "locate_on_screen('the Skip Ad button') to get x,y, then cursor_click "
+        "there with that same description as the label, then see_screen to "
+        "CONFIRM it did what you meant before reporting. Also cursor_type / "
+        "cursor_key / cursor_scroll. A pay/delete control is refused. Try the "
+        "accessibility tree FIRST - the hand is for when there is no handle to "
+        "grab.",
     "research specialist":
         "Search with web_search, then read pages with web_fetch. When you need "
         "to read SEVERAL pages, request them in ONE step (several web_fetch "
@@ -1472,9 +1488,9 @@ def build_team(force: bool = False) -> Agent:
     desktop = sub("desktop", "desktop specialist", "desktop",
                   [OPEN_APP, OPEN_CHROME_PROFILE, MEDIA, PROCESSES, STATS,
                    LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
-                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE, VERIFY_OUTCOME,
-                   CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY, CURSOR_SCROLL,
-                   SCREEN_INFO])
+                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE, LOCATE_ON_SCREEN,
+                   VERIFY_OUTCOME, CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY,
+                   CURSOR_SCROLL, SCREEN_INFO])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
@@ -1488,8 +1504,8 @@ def build_team(force: bool = False) -> Agent:
                    MAKE_DOCX, RECENT_ACTIVITY, CALL_ME, REMEMBER, RECALL,
                    SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN,
-                   CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY, CURSOR_SCROLL,
-                   SCREEN_INFO]
+                   LOCATE_ON_SCREEN, CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY,
+                   CURSOR_SCROLL, SCREEN_INFO]
     # Crystallized skills become first-class tools - the whole point of saving
     # one is that next time it is a direct call, routed by its description. A
     # broken recipe file is skipped (parsed, not imported), never fatal.

@@ -336,6 +336,35 @@ def test_cursor_key_presses_a_chord(db, monkeypatch):
     assert out["ok"] and pressed == ["ctrl+a"]
 
 
+# ── the trio: eyes locate, hand clicks ────────────────────────────────────────
+
+def test_locate_scales_model_coords_into_cursor_space(monkeypatch):
+    from PIL import Image
+
+    from lib import cursor, vision
+    monkeypatch.setattr(vision, "_capture_screen",
+                        lambda: Image.new("RGB", (1000, 800)))
+    monkeypatch.setattr(vision, "_ask",
+                        lambda img, q: '{"found": true, "x": 500, "y": 400,'
+                                       ' "what": "Skip Ad"}')
+    monkeypatch.setattr(cursor, "screen_size", lambda: (2000, 1600))
+    out = vision.locate("the Skip Ad button")
+    # 500/1000 of the way across a 2000-wide screen = 1000; 400/800 of 1600 = 800
+    assert out["ok"] and out["found"] and out["x"] == 1000 and out["y"] == 800
+    assert out["what"] == "Skip Ad"
+
+
+def test_locate_reports_not_found_cleanly(monkeypatch):
+    from PIL import Image
+
+    from lib import vision
+    monkeypatch.setattr(vision, "_capture_screen",
+                        lambda: Image.new("RGB", (800, 600)))
+    monkeypatch.setattr(vision, "_ask", lambda img, q: '{"found": false}')
+    out = vision.locate("a purple unicorn")
+    assert out["ok"] and out["found"] is False
+
+
 def test_fast_path_does_not_spend_on_learning(db, monkeypatch):
     """A fast-path turn answers a trivial, deterministic op - there is nothing
     durable to learn, so the background capture call must not fire."""
