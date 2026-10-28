@@ -320,6 +320,18 @@ def test_cursor_click_proceeds_on_a_safe_label(db, monkeypatch):
     assert out["ok"] is True and clicked == [(100, 200)]
 
 
+def test_cursor_click_refuses_an_unlabelled_click(db, monkeypatch):
+    # An empty label used to skip the guard entirely - a blind click must be
+    # refused, so the pay/delete check can never be bypassed.
+    from lib import cursor
+    clicked = []
+    monkeypatch.setattr(cursor, "click", lambda *a, **k: clicked.append(a))
+    assert agent_core._cursor_click({"x": 10, "y": 20}, _ctx())["ok"] is False
+    assert agent_core._cursor_click({"x": 10, "y": 20, "label": "   "},
+                                    _ctx())["ok"] is False
+    assert not clicked                       # nothing was ever clicked
+
+
 def test_cursor_type_refuses_payment_details(db, monkeypatch):
     from lib import cursor
     typed = []

@@ -726,6 +726,14 @@ def _click_guard(label: str) -> None:
 
 def _cursor_click(args, ctx) -> dict:
     label = (args.get("label") or "").strip()
+    # NO BLIND CLICKS. An empty label would skip the pay/delete guard, so a click
+    # with nothing named is refused outright - the model must say what it sees it
+    # is clicking, which is exactly what the guard then checks.
+    if not label:
+        return {"ok": False, "status": "blocked",
+                "error": "cursor_click requires a label",
+                "note": "I will not click without naming what I am clicking. Say "
+                        "what you SEE there, so the pay/delete guard can check it."}
     try:
         _click_guard(label)
     except Blocked as b:
