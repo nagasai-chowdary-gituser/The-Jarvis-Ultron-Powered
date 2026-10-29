@@ -248,7 +248,8 @@ class Agent:
 
     def run(self, task: str, ctx: Ctx, client: OpenAI, *,
             history: list[dict] | None = None,
-            instructions: str | None = None, context: str = "") -> str:
+            instructions: str | None = None, context: str = "",
+            start_effort: str = "") -> str:
         """Run until the model stops asking for tools. Returns its final text.
 
         One loop for every agent - orchestrator and specialist alike. The
@@ -269,7 +270,10 @@ class Agent:
             convo.append({"role": "developer", "content": context})
         convo += list(history or [])
         convo.append({"role": "user", "content": task})
-        effort = self.effort
+        # THINK HARDER on complex requests from the start (not only after a
+        # failure): the caller passes start_effort='high' for a multi-part or
+        # ambiguous ask, so comprehension gets real reasoning up front.
+        effort = start_effort or self.effort
         failures = 0
 
         # THE GOVERNOR. A turn ends on a REASON that is true about the work -
@@ -1348,8 +1352,12 @@ LOOK BEFORE YOU CLAIM AN ON-SCREEN RESULT. After acting on something you can onl
 
 ORCH_PROMPT = _IDENTITY + """
 
+UNDERSTAND THE WHOLE REQUEST FIRST
+Before anything, work out the ONE real goal and how its parts CONNECT. Do NOT chop a connected request into unrelated tasks. "Do X in Y and make Z" almost always means ONE pipeline: produce Z FROM the result of X, done in Y - not "X" plus a separate, invented "Z". Example: "open ChatGPT in my 5th account and make a PDF in ChatGPT" means USE ChatGPT in his 5th Chrome account to produce the content, THEN save THAT content as a PDF - the PDF comes from ChatGPT's answer, it is not made up on its own. The same for "research ... and email it", "read ... and summarise it": the second part uses the first part's result.
+Then STATE YOUR UNDERSTANDING in one plain line as the plan's `task` - the whole connected goal in your words, naming the dependency (e.g. "Use ChatGPT in your 5th account to research the 2026 floods, then save that as a PDF") - NOT a fragment like "make a PDF". Say it, then carry it out immediately; do not wait for him to confirm. If that one line is wrong he will stop you. Ask (ask_boss) only when a name or instruction is genuinely ambiguous, and ask once.
+
 PLAN FIRST, THEN MOVE FAST
-If the task needs DOING something (opening apps, the browser, files, messaging, several steps), call plan(task, helpers, steps) - name the task in a few words, the helpers/MCP you will use, the short steps. To save a round, emit plan AND your first helper call IN THE SAME STEP (plan runs instantly and the first helper starts at once). Then carry it out step by step, no pausing and no second-guessing. If it is a greeting, a chat line, or a question you can answer from what you know or one quick tool, SKIP the plan and just answer - do not plan a plan for a one-liner.
+If the task needs DOING something (opening apps, the browser, files, messaging, several steps), call plan(task, helpers, steps) - the `task` is your one-line understanding above, then the helpers/MCP you will use and the short steps. To save a round, emit plan AND your first helper call IN THE SAME STEP (plan runs instantly and the first helper starts at once). Then carry it out step by step, no pausing and no second-guessing. If it is a greeting, a chat line, or a question you can answer from what you know or one quick tool, SKIP the plan and just answer - do not plan a plan for a one-liner.
 
 HOW YOU WORK
 You lead a small team of specialists and you decide who does what. Hand a job to a specialist by calling it with one clear sentence:
@@ -1610,6 +1618,19 @@ def _is_trivial(text: str) -> bool:
     return budget.for_request(text).deadline_s <= 60.0
 
 
+def _is_complex(text: str) -> bool:
+    """A multi-part, dependent or long request - the kind that gets misread as
+    unrelated tasks. These get the orchestrator thinking HARD from the start, so
+    it grasps the whole goal and how the parts connect."""
+    t = f" {(text or '').lower()} "
+    if budget.for_request(text).deadline_s >= 420.0:        # heavy tier
+        return True
+    connectors = sum(t.count(w) for w in
+                     (" and ", " then ", " after that ", " also ", " in my ",
+                      " from ", " using ", " so that "))
+    return connectors >= 1 or len(t.split()) > 18
+
+
 def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
                        history: list, context: str, emit) -> str:
     """One self-check, and at most one repair. Returns the final reply.
@@ -1725,7 +1746,8 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
                + brain.rolling_summary(channel)         # recap of the older chat
                + memory.recall_block(text)
                + (state.as_context(jid) if jid else ""))
-    reply = team.run(text, ctx, _client(), history=history, context=context)
+    reply = team.run(text, ctx, _client(), history=history, context=context,
+                     start_effort="high" if _is_complex(text) else "")
 
     reply = brain.vet(reply, ctx.evidence) or "Done."
     # vet tags the source ([state]/[guess]) for its own honesty checks; strip

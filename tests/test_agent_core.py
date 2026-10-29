@@ -485,6 +485,35 @@ def test_cursor_click_tool_reports_a_yield_cleanly(db, monkeypatch):
     assert out["ok"] is False and out["status"] == "yielded"
 
 
+def test_is_complex_catches_connected_multipart_requests():
+    assert agent_core._is_complex(
+        "open chatgpt in my 5th account and make pdf in chatgpt") is True
+    assert agent_core._is_complex("research X then email me a summary") is True
+    assert agent_core._is_complex("what time is it") is False
+    assert agent_core._is_complex("pause") is False
+
+
+def test_agent_run_thinks_harder_when_asked(db):
+    agent = agent_core.Agent("t", "m", "low", "P", [], 3)
+
+    class Rec(FakeClient):
+        def __init__(self, s):
+            super().__init__(s)
+            self.kw = []
+
+        def create(self, **k):
+            self.kw.append(k)
+            return super().create(**k)
+
+    c = Rec([_Resp([], "done")])
+    agent.run("a complex task", _ctx(), c, start_effort="high")
+    assert c.kw[0]["reasoning"]["effort"] == "high"      # started high, not 'low'
+
+    c2 = Rec([_Resp([], "done")])
+    agent.run("simple", _ctx(), c2)                      # no override
+    assert c2.kw[0]["reasoning"]["effort"] == "low"      # its own effort
+
+
 def test_budget_gives_creative_tasks_real_time():
     import budget
     assert budget.for_request("draw it").deadline_s >= 400      # not the 60s tier
