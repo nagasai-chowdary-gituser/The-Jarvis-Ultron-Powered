@@ -112,11 +112,24 @@ def _unit(v: np.ndarray) -> np.ndarray:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def remember(text: str, kind: str = "fact", source: str = "",
-             importance: float = 1.0) -> int | None:
-    """Store one memory. Near-duplicates are merged (importance bumped), not piled up."""
+             importance: float = 1.0, trusted: bool = True) -> int | None:
+    """Store one memory. Near-duplicates are merged (importance bumped), not piled up.
+
+    POISONING GUARD: nothing that looks like an injected command or a credential
+    is ever stored (safety.unsafe_to_learn). And a PREFERENCE - a standing rule
+    about how the Boss likes things, which then steers every turn - is accepted
+    ONLY from a trusted source (his own messages), never from content Jarvis read
+    off the web / a chat / an email. Untrusted FACTS are allowed (he asked to
+    learn from the internet when it is safe), but untrusted behaviour rules are
+    not, so a page can never rewrite how Jarvis acts."""
+    import safety
     text = (text or "").strip()
     if len(text) < 3:
         return None
+    if safety.unsafe_to_learn(text):
+        return None                          # injected order or a secret: never store
+    if kind == "preference" and not trusted:
+        return None                          # behaviour rules only from the Boss
     text = state.redact(text)
     vecs = embed([text])
     vec = vecs[0] if vecs else None
@@ -301,38 +314,49 @@ _CAPTURE_PROMPT = (
     "standing rules shown below, copy that old rule's text VERBATIM into "
     "'supersedes' so it can be removed (a rule must never sit next to its own "
     "opposite). Only list a rule you are actually overriding.\n"
-    "Output ONLY JSON: "
-    '{"facts": [...], "preferences": [...], "supersedes": [...]}. '
-    "Empty arrays if none.")
+    "4. LESSONS - learn to do better from WHAT HAPPENED (the trace below, if "
+    "any). If something FAILED and was then fixed, record the lesson so it is "
+    "not repeated ('To open ChatGPT in his account, use open_chrome_profile with "
+    "the url, not the automation browser'). If a multi-step task WORKED, record "
+    "the proven flow as a reusable procedure ('To make a PDF from ChatGPT: open "
+    "the profile at chatgpt.com, read the answer, then make_docx/pdf from it'). "
+    "Each lesson: one actionable sentence, starting with the task it applies to.\n"
+    "Output ONLY JSON: {\"facts\": [...], \"preferences\": [...], "
+    '"supersedes": [...], "lessons": [...]}. Empty arrays if none.')
 
 
-def capture_turn(user_text: str, reply: str, source: str = "") -> None:
+def capture_turn(user_text: str, reply: str, source: str = "",
+                 trace: str = "") -> None:
     """Learn from one exchange, off the turn's critical path.
 
     A daemon thread: an episodic trace goes in at once, then a cheap model pass
-    pulls out durable FACTS and PREFERENCES (how the Boss likes things done,
-    including corrections). Preferences are stored heavier and are always
-    applied (preferences_block), so Jarvis gets better at being HIS assistant.
-    Failure is swallowed - learning must never cost a reply."""
+    pulls out durable FACTS, PREFERENCES (how the Boss likes things done), and -
+    from the TOOL TRACE of what actually happened - LESSONS (what worked / what
+    failed and the fix), so Jarvis gets better at DOING over time, not just at
+    knowing him. Facts/prefs come from HIS message (trusted); nothing that looks
+    injected or secret is ever stored (the remember() guard). Failure is
+    swallowed - learning must never cost a reply."""
     def work() -> None:
         try:
             ut = (user_text or "").strip()
             if len(ut) >= 6:
                 remember(ut, kind="episodic", source=source, importance=0.5)
-            if len(ut) < 12:
+            if len(ut) < 12 and not trace:
                 return                      # "hi"/"ok" teaches nothing durable
             from openai import OpenAI
             # Show the model the rules it already holds, so it can tell a NEW
             # rule from a CHANGE to an old one and name what to supersede.
             existing = preferences_block()
+            content = f"USER: {ut[:1500]}\nJARVIS: {(reply or '')[:800]}\n"
+            if trace:
+                content += f"\nWHAT HAPPENED (tool trace):\n{trace[:1200]}\n"
+            content += existing
             r = OpenAI(timeout=30, max_retries=1).responses.create(
                 model=models.BRAIN,
                 instructions=_CAPTURE_PROMPT,
-                input=[{"role": "user",
-                        "content": f"USER: {ut[:1500]}\nJARVIS: "
-                                   f"{(reply or '')[:800]}\n{existing}"}],
+                input=[{"role": "user", "content": content}],
                 reasoning={"effort": "low"},
-                max_output_tokens=500, store=False)
+                max_output_tokens=600, store=False)
             models.record(r, models.BRAIN)
             raw = (r.output_text or "").strip()
             a, b = raw.find("{"), raw.rfind("}")
@@ -350,6 +374,11 @@ def capture_turn(user_text: str, reply: str, source: str = "") -> None:
                 if isinstance(p, str) and len(p.strip()) >= 6:
                     remember(p.strip(), kind="preference", source="capture",
                              importance=2.5)        # heavier: a standing rule
+            # LESSONS - proven flows and failure-fixes, recalled for similar tasks.
+            for le in (obj.get("lessons") or [])[:4]:
+                if isinstance(le, str) and len(le.strip()) >= 10:
+                    remember(le.strip(), kind="lesson", source="capture",
+                             importance=2.0)
         except Exception as e:
             state.record_error("memory.capture", e)
 

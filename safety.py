@@ -26,6 +26,7 @@ WHAT ELSE LIVES HERE
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -300,6 +301,51 @@ def refuse_destructive_code(code: str) -> None:
                     raise Blocked(f"deletion import: {a.name}",
                                   "That imports a deletion call, which I do "
                                   "not do.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prompt injection + memory poisoning — content Jarvis READS is DATA, never
+# orders, and it must never silently become what Jarvis believes about the Boss.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_INJECTION_MARKERS = (
+    "ignore previous", "ignore the above", "ignore all previous", "ignore your",
+    "disregard previous", "disregard the", "forget your instructions",
+    "forget previous", "you are now", "new instructions", "new instruction:",
+    "system prompt", "system:", "developer:", "do not tell your",
+    "don't tell your", "do not tell the", "without telling", "send to everyone",
+    "message everyone", "forward this to", "reply to all", "override your",
+    "jailbreak", "act as", "pretend you are", "from now on you", "you must now",
+    "your real instructions", "the user above", "as an ai you should")
+
+
+def looks_like_injection(text: str) -> bool:
+    """Does this read content try to GIVE Jarvis orders (prompt injection)?
+    Used to ignore its orders and warn the Boss - not to block the real task."""
+    t = (text or "").lower()
+    return any(m in t for m in _INJECTION_MARKERS)
+
+
+_SECRET_MARKERS = (
+    "password", "passwd", "api key", "api_key", "apikey", "secret key",
+    "private key", "seed phrase", "recovery phrase", "mnemonic", "access token",
+    "bearer ", "otp is", "the otp", "one-time password", "cvv", "pin is",
+    "pin number", "security code")
+
+
+def unsafe_to_learn(text: str) -> bool:
+    """Should this NEVER be stored in memory? Injected commands, or anything
+    that looks like a credential/secret/card. Poisoned or sensitive text must
+    not become a durable 'fact' or rule."""
+    t = (text or "").lower()
+    if any(m in t for m in _SECRET_MARKERS):
+        return True
+    if looks_like_injection(text):
+        return True
+    digits = re.sub(r"\D", "", text or "")
+    if len(digits) >= 13:                    # a card / long account number
+        return True
+    return False
 
 
 def money_check(text: str) -> None:
