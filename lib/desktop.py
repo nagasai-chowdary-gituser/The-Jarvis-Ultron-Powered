@@ -538,28 +538,38 @@ def _chrome_exe() -> str | None:
 
 
 def chrome_profiles() -> list[dict]:
-    """Every Chrome profile the owner has, IN PICKER ORDER: [{pos, dir, name, email}]."""
+    """Every Chrome profile the owner has, IN THE ORDER HE SEES IN THE PICKER:
+    [{pos, dir, name, email}].
+
+    The picker ("Who's using Chrome?") sorts ALPHABETICALLY BY NAME - verified
+    live against the owner's screen. An earlier version used
+    `profile.profiles_order` from Local State, but that list does NOT match the
+    visible grid (it started with Profile 47 while the picker starts with
+    'Balakrishna'), so 'open my 5th account' opened the wrong profile. The owner
+    counts the TILES he sees, so this sorts the same way: by name, then email,
+    then dir as a stable tiebreak for the many same-named ('saveetha.com')
+    profiles."""
     import json
     import os as _os
     ls = _os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data\Local State")
     try:
         d = json.load(open(ls, encoding="utf-8"))
-    except Exception as e:
+    except Exception:
         return []
     prof = d.get("profile", {}) or {}
     cache = prof.get("info_cache", {}) or {}
-    order = prof.get("profiles_order") or sorted(cache)
-    seen, out = set(), []
-    for dirn in order:
-        if dirn in cache and dirn not in seen:
-            seen.add(dirn)
-            info = cache[dirn]
-            out.append({"dir": dirn, "name": info.get("name", "") or dirn,
-                        "email": info.get("user_name", "") or ""})
-    for dirn, info in cache.items():              # any not listed in order
-        if dirn not in seen:
-            out.append({"dir": dirn, "name": info.get("name", "") or dirn,
-                        "email": info.get("user_name", "") or ""})
+    # His REAL main/default profile (what "my main account" means) is NOT the
+    # alphabetically-first tile - it is Chrome's default: the last-used profile,
+    # else the head of profiles_order, else "Default".
+    order = prof.get("profiles_order") or []
+    main_dir = (prof.get("last_used")
+                or (order[0] if order else None)
+                or ("Default" if "Default" in cache else None))
+    out = [{"dir": dirn, "name": info.get("name", "") or dirn,
+            "email": info.get("user_name", "") or "",
+            "default": dirn == main_dir}
+           for dirn, info in cache.items()]
+    out.sort(key=lambda p: (p["name"].lower(), p["email"].lower(), p["dir"]))
     for i, p in enumerate(out):
         p["pos"] = i + 1
     return out
@@ -570,7 +580,11 @@ def _match_profile(which: str, profs: list[dict]) -> dict | None:
     w = (which or "").strip().lower()
     if not w or not profs:
         return None
-    if any(k in w for k in ("main", "primary", "default", "first", "1st")):
+    # "main / primary / default" = his REAL default profile (not the first tile);
+    # "first / 1st" = picker position 1.
+    if any(k in w for k in ("main", "primary", "default")):
+        return next((p for p in profs if p.get("default")), profs[0])
+    if "first" in w or "1st" in w:
         return profs[0]
     # an ordinal: a digit anywhere, or an ordinal word
     n = None
@@ -592,12 +606,15 @@ def _match_profile(which: str, profs: list[dict]) -> dict | None:
     return None
 
 
-def open_chrome_profile(which: str) -> dict:
-    """Open the owner's REAL Chrome in a specific profile, by position/name/email.
+def open_chrome_profile(which: str, url: str = "") -> dict:
+    """Open the owner's REAL Chrome in a specific profile, by position/name/email,
+    optionally landing straight on a URL (so the site opens ALREADY SIGNED IN).
 
     `which` may be "main", an ordinal ("2nd", "fifth", "5", "profile 5"), or any
-    part of the account name or email. Returns the profile it opened so the
-    answer can name it, or the full list when it cannot tell which was meant."""
+    part of the account name or email. `url` opens that page directly in the
+    profile - the clean way to "open ChatGPT in my 5th account": one launch,
+    his real login, no address-bar fumbling. Returns the profile it opened, or
+    the full list when it cannot tell which was meant."""
     profs = chrome_profiles()
     if not profs:
         return {"ok": False, "error": "could not read your Chrome profiles"}
@@ -610,10 +627,21 @@ def open_chrome_profile(which: str) -> dict:
     exe = _chrome_exe()
     if not exe:
         return {"ok": False, "error": "Chrome was not found in the usual place"}
+    url = (url or "").strip()
+    if url and not url.lower().startswith(("http://", "https://")):
+        url = "https://" + url
+    cmd = [exe, f"--profile-directory={target['dir']}"]
+    if url:
+        cmd.append(url)
     try:
-        subprocess.Popen([exe, f"--profile-directory={target['dir']}"],
-                         creationflags=NO_WINDOW)
+        subprocess.Popen(cmd, creationflags=NO_WINDOW)
         return {"ok": True, "opened": target["name"], "email": target["email"],
-                "position": target["pos"], "dir": target["dir"]}
+                "position": target["pos"], "dir": target["dir"],
+                "url": url or None,
+                "note": ("Opened your REAL signed-in profile" +
+                         (f" at {url}" if url else "") +
+                         ". Drive it ON SCREEN now (read_window / click_control / "
+                         "cursor+eyes) - it cannot be remote-controlled, and "
+                         "never make up its content with code.")}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}

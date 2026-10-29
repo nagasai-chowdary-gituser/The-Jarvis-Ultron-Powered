@@ -491,6 +491,41 @@ def test_budget_gives_creative_tasks_real_time():
     assert budget.for_request("paint me a smiley").deadline_s >= 400
 
 
+def test_match_profile_counts_like_the_picker():
+    from lib import desktop
+    profs = [
+        {"pos": 1, "dir": "A", "name": "Balakrishna", "email": "b@x", "default": False},
+        {"pos": 2, "dir": "B", "name": "DEVINEEDI", "email": "d@x", "default": False},
+        {"pos": 3, "dir": "C", "name": "Jashwanth", "email": "j@x", "default": False},
+        {"pos": 4, "dir": "D", "name": "Kolimi", "email": "k@x", "default": False},
+        {"pos": 5, "dir": "E", "name": "Nagasai", "email": "n@x", "default": True},
+    ]
+    m = desktop._match_profile
+    assert m("5th", profs)["name"] == "Nagasai"          # picker position 5
+    assert m("secondary", profs)["name"] == "DEVINEEDI"  # 2nd
+    assert m("first", profs)["name"] == "Balakrishna"    # position 1
+    assert m("main", profs)["name"] == "Nagasai"         # REAL default, not tile 1
+    assert m("kolimi", profs)["name"] == "Kolimi"        # by name
+
+
+def test_open_chrome_profile_opens_the_real_profile_at_a_url(monkeypatch):
+    import subprocess
+
+    from lib import desktop
+    monkeypatch.setattr(desktop, "chrome_profiles",
+                        lambda: [{"pos": 5, "dir": "Profile 47", "name": "Nagasai",
+                                  "email": "n@x", "default": True}])
+    monkeypatch.setattr(desktop, "_match_profile", lambda w, p: p[0])
+    monkeypatch.setattr(desktop, "_chrome_exe", lambda: "chrome.exe")
+    cmds = []
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **k: cmds.append(cmd))
+    out = desktop.open_chrome_profile("5th", url="chatgpt.com")
+    assert out["ok"] and out["opened"] == "Nagasai"
+    assert "--profile-directory=Profile 47" in cmds[0]
+    assert "https://chatgpt.com" in cmds[0]              # opens signed-in, on the site
+    assert "code" in out["note"].lower()                 # reminder: don't fake with code
+
+
 def test_open_app_does_not_launch_a_second_copy(monkeypatch):
     import subprocess
 

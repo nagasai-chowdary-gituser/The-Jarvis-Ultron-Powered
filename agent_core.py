@@ -1228,11 +1228,19 @@ OPEN_APP = _t("open_app", "Launch an app by name.",
     _desktop(lambda d, a: d.open_app(a.get("name", ""))))
 
 OPEN_CHROME_PROFILE = _t("open_chrome_profile",
-    "Open the Boss's REAL Chrome in a SPECIFIC profile (he has many Google "
-    "accounts). 'which' can be 'main', an ordinal by picker order ('2nd', "
-    "'fifth', '5'), or part of the account name or email ('rudrxai'). If it "
-    "cannot tell which, the result lists the profiles - show them and ask.",
-    {"which": {"type": "string"}}, ["which"], _desk_call("open_chrome_profile"))
+    "Open the Boss's REAL Chrome in a SPECIFIC profile - his accounts are ALL "
+    "signed in there, so use THIS for 'open <site> in my <Nth/named> account' "
+    "(e.g. 'open ChatGPT in my 5th account'): pass `url` and it lands straight "
+    "on the site, already logged in - no sign-in, ever. 'which' = 'main', an "
+    "ordinal by picker order ('2nd','fifth','5'), or part of the account name/"
+    "email ('rudrxai'); if unsure, the result lists the profiles - ask. After "
+    "it opens, DRIVE IT ON SCREEN (read_window / click_control / set_control / "
+    "cursor+eyes) - his real Chrome canNOT be remote-controlled, and you must "
+    "NEVER invent the result with code. This is NOT ensure_browser (that is a "
+    "separate automation Chrome, signed out).",
+    {"which": {"type": "string"},
+     "url": {"type": "string", "description": "optional: open this site directly"}},
+    ["which"], _desk_call("open_chrome_profile"))
 
 MEDIA = _t("media", "Media keys: play|pause|next|previous|volumeup|volumedown|mute.",
     {"action": {"type": "string"}}, ["action"],
@@ -1359,6 +1367,8 @@ ROUTING - this is where turns go wrong, so get it right:
 - Do NOT split one action across specialists, and never hand the same job to two of them.
 - When a specialist reports it DID the job, the job is DONE - speak its result and stop. Do not re-do it with another specialist or with run_python to "double-check"; that is how a real success gets reported as a failure.
 - Reading what is on a web or chat app's screen (WhatsApp, Gmail, a website) is comms/browser work over the app's protocol - NEVER screenshots or OCR.
+- "IN MY <Nth/named> ACCOUNT / PROFILE" (e.g. "open ChatGPT in my 5th account", "do it in my secondary account"): this means his REAL Chrome, where he is already signed into everything. Use open_chrome_profile(which, url) - it opens that profile straight on the site, logged in. Then DRIVE IT ON SCREEN with the desktop specialist (read_window to see the controls, set_control/click_control to type and click, cursor+eyes if needed). Do NOT use ensure_browser/the browser specialist for a named account - that is a SEPARATE automation Chrome, signed out, and it lands on the profile picker. Get the account name right: "secondary"=2nd, do not drift to another number.
+- NEVER FAKE A BROWSER RESULT WITH CODE. If the task is to use a website/ChatGPT in his account and you cannot actually do it on screen, STOP and say so (ask him to check the window) - do NOT fall back to run_python to invent the content. Making a file FROM content you genuinely read is fine; manufacturing the content is not.
 - GO FAST: when parts of the task are INDEPENDENT (e.g. check the CPU and count files, or research one thing while reading another), call those specialists in the SAME step - they run at the same time instead of one after another.
 
 """ + _HONESTY + """
