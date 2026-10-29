@@ -12,7 +12,11 @@ sol are not.
 from __future__ import annotations
 
 BRAIN = "gpt-5.6-luna"              # $0.20 / $0.02 cached / $1.20 per 1M
-BRAIN_HEAVY = "gpt-5.6-terra"       # $2.00 / $0.20 cached / $12.00 per 1M
+# The orchestrator brain. Upgraded 2026-10-29: gpt-6.1-terra is ~50% cheaper than
+# gpt-5.6-terra ($1/$5 vs $2/$12) AND smarter - OpenAI reports +15pts on Agents'
+# Last Exam at ~1/3 the cost and the error rate falling from 53.6% to 16.7%. So
+# this one change lowers the bill AND reduces the misreads at once.
+BRAIN_HEAVY = "gpt-6.1-terra"       # $1.00 / $0.10 cached / $5.00 per 1M
 REALTIME = "gpt-realtime-mini"      # the phone and desk voice; 0.76s to first word
 VISION = "gpt-5.6-luna"
 VISION_FAST = "gpt-4o-mini"         # eyes: screen/image reading - 5x faster than luna, same accuracy on text
@@ -23,7 +27,8 @@ DAILY_CAP_USD = 5.0
 
 PRICING = {
     BRAIN:       {"in": 0.20, "cached": 0.02, "out": 1.20},
-    BRAIN_HEAVY: {"in": 2.00, "cached": 0.20, "out": 12.00},
+    BRAIN_HEAVY: {"in": 1.00, "cached": 0.10, "out": 5.00},    # gpt-6.1-terra
+    "gpt-5.6-terra": {"in": 2.00, "cached": 0.20, "out": 12.00},  # old, for history
     REALTIME:    {"in": 0.60, "cached": 0.06, "out": 2.40},
     VISION_FAST: {"in": 0.15, "cached": 0.075, "out": 0.60},   # gpt-4o-mini, vision
 }
