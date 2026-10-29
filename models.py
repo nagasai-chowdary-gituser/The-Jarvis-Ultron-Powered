@@ -28,7 +28,6 @@ DAILY_CAP_USD = 5.0
 PRICING = {
     BRAIN:       {"in": 0.20, "cached": 0.02, "out": 1.20},
     BRAIN_HEAVY: {"in": 1.00, "cached": 0.10, "out": 5.00},    # gpt-6.1-terra
-    "gpt-5.6-terra": {"in": 2.00, "cached": 0.20, "out": 12.00},  # old, for history
     REALTIME:    {"in": 0.60, "cached": 0.06, "out": 2.40},
     VISION_FAST: {"in": 0.15, "cached": 0.075, "out": 0.60},   # gpt-4o-mini, vision
 }
