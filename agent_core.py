@@ -274,6 +274,10 @@ class Agent:
         # failure): the caller passes start_effort='high' for a multi-part or
         # ambiguous ask, so comprehension gets real reasoning up front.
         effort = start_effort or self.effort
+        # model is escalated LOCALLY on a stuck run (luna specialist -> terra),
+        # never by mutating self.model: the team is cached and shared across
+        # overlapping turns, so one turn must not change another's model.
+        model = self.model
         failures = 0
 
         # THE GOVERNOR. A turn ends on a REASON that is true about the work -
@@ -301,14 +305,14 @@ class Agent:
             _compact_convo(convo)          # keep a long turn inside its window
             try:
                 resp = client.responses.create(
-                    model=self.model, instructions=instr,
+                    model=model, instructions=instr,
                     input=convo, tools=specs,
                     reasoning={"effort": effort},
                     max_output_tokens=models.MAX_OUTPUT_TOKENS, store=False)
             except Exception as e:
                 state.record_error(f"agent.{self.name}.model", e)
                 return f"I could not reach the model: {type(e).__name__}"
-            models.record(resp, self.model)
+            models.record(resp, model)
 
             for item in resp.output:
                 convo.append(brain._echo(item))
@@ -362,6 +366,23 @@ class Agent:
                         "a DIFFERENT approach - another tool, another specialist, "
                         "or a changed input. If it truly cannot be done, stop and "
                         "say so with the reason."})
+                elif failures >= 3 and model == models.BRAIN:
+                    # RUNG 3 (AGENTS.md 9.3): a luna specialist that is still
+                    # stuck gets terra's brains - genuinely the last resort, and
+                    # the one escalation that never existed, so the DOING work
+                    # (driving apps, a tricky page) used to just die as luna.
+                    # The orchestrator is already terra, so this is specialists
+                    # only. Switching model is a NEW approach, not more of the
+                    # same, so the no-progress streak resets to give it a fair
+                    # run rather than being killed as STUCK on the next round.
+                    model = models.BRAIN_HEAVY
+                    b.progress.rounds_without = 0
+                    convo.append({"role": "user", "content":
+                        "Still stuck after changing approach. You now have "
+                        "stronger reasoning - rethink the whole problem from "
+                        "scratch and solve it a DIFFERENT way. Only report it "
+                        "cannot be done if it genuinely cannot (it needs the "
+                        "Boss to sign in, a captcha, or missing hardware)."})
             else:
                 failures = 0        # a clean round resets the recovery ladder
 
@@ -1478,8 +1499,13 @@ ROUTING - this is where turns go wrong, so get it right:
 
 """ + _HONESTY + """
 
-FINISH THE WHOLE REQUEST
-Three things asked means three things done. Do not stop between parts to check in. If one part is genuinely impossible, do the rest and say which part failed and why. Ask the Boss (ask_boss) only when a name or instruction is truly ambiguous, and ask once.
+FINISH IT YOURSELF - DO NOT HAND IT BACK
+Three things asked means three things done; do not stop between parts to check in. You are AUTONOMOUS: your job is to DO the task, not to tell the Boss how to do it himself. So:
+- NEVER bounce it back with "please do it yourself", "let me know when you've signed in", "you can click X", or "could you confirm..." when you could just DO it or LOOK. After you open or change anything, LOOK at the result (see_screen / read_window / read the page) and carry on - do not ask him what is on his own screen.
+- A specialist (or a tool) saying it "couldn't" is NOT your final answer. Try another specialist, another approach, or do it yourself with run_python or the eyes+hand loop - keep going until it is genuinely done.
+- Stop and tell him ONLY when it truly needs HIM and nothing you can do gets past it: he must personally sign in, a captcha, a missing app/hardware, money, or a name so ambiguous that a wrong guess could do real harm. Then say exactly what you need and why - that is a finished, honest answer, not a failure.
+- ask_boss is a last resort for a genuinely ambiguous NAME or choice, asked ONCE - never a way to avoid trying.
+If one part is genuinely impossible, do the rest and say which part needs him and why.
 
 ANYTHING THAT WAITS IS A JOB
 Never sleep or "keep an eye" in a turn. If something must be watched or continued until a condition, call schedule_job - it returns an id and a separate worker does the waiting.
@@ -1559,7 +1585,7 @@ def _sub_prompt(role: str) -> str:
     extra = _ROLE_RULES.get(role, "")
     return _IDENTITY + f"""
 
-You are the {role}. Do exactly the task you are handed, using your tools, and report back in one or two plain sentences what you actually found or did - what the tools RETURNED, never what you intended. If you could not do it, say so and why; do not fall back to pixel-driving. You do not talk to the Boss directly; you report to the orchestrator.
+You are the {role}. Do exactly the task you are handed, using your tools, and report back in one or two plain sentences what you actually found or did - what the tools RETURNED, never what you intended. BE PERSISTENT: if one way does not work, TRY ANOTHER before giving up - a different tool, a different selector or name, or look at the screen and adapt. Report that you could not do it ONLY when you have genuinely run out of ways, and then say why - and never invent or fake a result to look finished. You do not talk to the Boss directly; you report to the orchestrator.
 
 {extra}
 
@@ -1728,41 +1754,55 @@ def _is_complex(text: str) -> bool:
     return connectors >= 1 or len(t.split()) > 18
 
 
+MAX_REPAIRS = 2          # how many times a real DOING turn is pushed to finish
+
+
 def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
                        history: list, context: str, emit) -> str:
-    """One self-check, and at most one repair. Returns the final reply.
+    """Self-check and PERSIST until it is genuinely done. Returns the final reply.
 
     Fires only when a tool actually ran (so pure chat and read-only answers the
     model is confident about are not taxed) and the request is not trivial.
-    verify.check is conservative, so a gap here is a real one; we hand exactly
-    that gap back and let the orchestrator finish it, rather than re-doing the
-    whole task."""
+    verify.check is conservative, so a gap it reports is a real one; we hand
+    exactly that gap back and let the orchestrator finish it. It repairs up to
+    MAX_REPAIRS times, RE-CHECKING after each - one pass was not enough for a
+    task that needs a couple of corrections, which is how a job used to end a
+    step short of done."""
     did_work = bool(ctx.evidence["results"] or ctx.evidence["failures"])
     if not did_work or _is_trivial(text):
         return reply
-    v = verify.check(text, reply, ctx.evidence, client=_client())
-    if v["ok"]:
-        emit({"type": "tool", "name": "verify", "code": "", "why": "checking"})
-        emit({"type": "tool_result", "name": "verify", "ok": True,
-              "detail": "checks out"})
-        return reply
 
-    emit({"type": "tool", "name": "verify", "code": "", "why": v["gap"][:80]})
-    repair = (f"Self-check: you reported this done, but a gap remains - {v['gap']}. "
-              f"Do ONLY that part now with your tools, then give the final reply. "
-              f"If it genuinely cannot be done, say so plainly and why.")
-    seeded = list(history) + [{"role": "user", "content": text},
-                              {"role": "assistant", "content": reply}]
-    try:
-        fixed = team.run(repair, ctx, _client(), history=seeded,
-                         context=context)
-        fixed = _strip_source_tag(brain.vet(fixed, ctx.evidence) or reply)
-    except Exception as e:
-        state.record_error("agent.repair", e)
-        fixed = reply
-    emit({"type": "tool_result", "name": "verify", "ok": True,
-          "detail": "repaired: " + v["gap"][:120]})
-    return fixed or reply
+    for attempt in range(MAX_REPAIRS):
+        v = verify.check(text, reply, ctx.evidence, client=_client())
+        emit({"type": "tool", "name": "verify", "code": "",
+              "why": "checking" if v["ok"] else v["gap"][:80]})
+        if v["ok"]:
+            emit({"type": "tool_result", "name": "verify", "ok": True,
+                  "detail": "checks out"})
+            return reply
+        # A gap remains - push the orchestrator to close exactly that gap, then
+        # loop and verify again. Only a genuine block (needs him / captcha /
+        # hardware) is an acceptable stopping point short of done.
+        repair = (f"Self-check: you reported this done, but a gap remains - "
+                  f"{v['gap']}. Do ONLY that part now with your tools, then give "
+                  f"the final reply. Do NOT hand it back to the Boss unless it "
+                  f"genuinely needs him (sign-in, captcha, missing hardware); "
+                  f"then say exactly what you need and why.")
+        seeded = list(history) + [{"role": "user", "content": text},
+                                  {"role": "assistant", "content": reply}]
+        try:
+            fixed = team.run(repair, ctx, _client(), history=seeded,
+                             context=context)
+            fixed = _strip_source_tag(brain.vet(fixed, ctx.evidence) or reply)
+        except Exception as e:
+            state.record_error("agent.repair", e)
+            emit({"type": "tool_result", "name": "verify", "ok": False,
+                  "detail": "repair error: " + str(e)[:80]})
+            return reply
+        emit({"type": "tool_result", "name": "verify", "ok": True,
+              "detail": f"repair {attempt + 1}: " + v["gap"][:110]})
+        reply = fixed or reply
+    return reply
 
 
 # ── ONE brain across every door the OWNER speaks through ──────────────────────

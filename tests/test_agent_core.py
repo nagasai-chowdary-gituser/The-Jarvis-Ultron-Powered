@@ -542,6 +542,116 @@ def test_grounding_uses_the_stronger_model(monkeypatch):
     assert vision.GROUND_MODEL != vision.VISION_MODEL     # genuinely different
 
 
+# ── finishing, not giving up: escalation + persistent repair ──────────────────
+
+def test_stuck_specialist_escalates_from_luna_to_terra(db):
+    """A luna specialist that stays stuck gets terra's brains (AGENTS.md 9.3
+    rung 3) instead of dying as luna - the escalation that never existed, so
+    the DOING work used to just fail at the weaker model."""
+    import models
+
+    def flaky(args, ctx):
+        return {"ok": False, "error": "still stuck"}
+
+    tool = agent_core.Tool("flaky", "d",
+                           {"type": "object", "properties": {}}, flaky)
+
+    class Recording:
+        def __init__(self):
+            self.models = []
+            self.responses = self
+
+        def create(self, **k):
+            self.models.append(k["model"])
+            return _Resp([_FC("flaky", {}, f"c{len(self.models)}")])
+
+    rec = Recording()
+    a = agent_core.Agent("files", models.BRAIN, "medium", "inst", [tool], 40)
+    a.run("please keep trying to do this hard thing for me now", _ctx(), rec)
+
+    assert models.BRAIN in rec.models                    # started on luna
+    assert models.BRAIN_HEAVY in rec.models              # escalated to terra
+    assert rec.models.index(models.BRAIN_HEAVY) >= 3     # only after luna kept failing
+
+
+def test_the_orchestrator_does_not_self_escalate(db):
+    """The orchestrator is already terra, so the specialist-only escalation must
+    never fire for it (model stays terra, no wasted switch logic)."""
+    import models
+
+    def flaky(args, ctx):
+        return {"ok": False, "error": "nope"}
+
+    tool = agent_core.Tool("flaky", "d",
+                           {"type": "object", "properties": {}}, flaky)
+
+    class Recording:
+        def __init__(self):
+            self.models = []
+            self.responses = self
+
+        def create(self, **k):
+            self.models.append(k["model"])
+            return _Resp([_FC("flaky", {}, f"c{len(self.models)}")])
+
+    rec = Recording()
+    a = agent_core.Agent("jarvis", models.BRAIN_HEAVY, "medium", "i", [tool], 40)
+    a.run("keep trying this hard thing for me now please", _ctx(), rec)
+    assert set(rec.models) == {models.BRAIN_HEAVY}        # terra throughout
+
+
+def test_verify_repairs_more_than_once_until_done(db, monkeypatch):
+    """A DOING turn that is a step short gets pushed to finish - verify repairs
+    up to twice and RE-CHECKS, instead of stopping at the first gap."""
+    import verify
+    monkeypatch.setattr(agent_core, "_client", lambda: object())
+    checks = [{"ok": False, "gap": "the file was not saved"},
+              {"ok": False, "gap": "still only 2 of 3 slides"}]
+    monkeypatch.setattr(verify, "check", lambda *a, **k: checks.pop(0))
+
+    class Team:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, *a, **k):
+            self.calls += 1
+            return f"repaired {self.calls}"
+
+    team = Team()
+    ctx = _ctx()
+    ctx.evidence["results"].append({"tool": "make_pptx", "ok": True})
+    out = agent_core._verify_and_repair(
+        "make a 3-slide deck and save it", "done", team, ctx,
+        history=[], context="", emit=lambda e: None)
+    assert team.calls == 2                 # pushed twice, not once
+    assert "repaired 2" in out
+
+
+def test_verify_stops_as_soon_as_it_checks_out(db, monkeypatch):
+    """It re-checks after a repair and stops the moment the gap is closed - it
+    does not keep burning repairs once the work is actually done."""
+    import verify
+    monkeypatch.setattr(agent_core, "_client", lambda: object())
+    checks = [{"ok": False, "gap": "not saved yet"}, {"ok": True}]
+    monkeypatch.setattr(verify, "check", lambda *a, **k: checks.pop(0))
+
+    class Team:
+        def __init__(self):
+            self.calls = 0
+
+        def run(self, *a, **k):
+            self.calls += 1
+            return "now saved"
+
+    team = Team()
+    ctx = _ctx()
+    ctx.evidence["results"].append({"tool": "make_pptx", "ok": True})
+    out = agent_core._verify_and_repair(
+        "make a 3-slide deck and save it", "done", team, ctx,
+        history=[], context="", emit=lambda e: None)
+    assert team.calls == 1 and checks == []    # one repair, then the recheck passed
+
+
 # ── review fixes: api bill, cursor yield, budget, no duplicate app ────────────
 
 def test_api_usage_reads_the_local_spend_log(db):
