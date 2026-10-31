@@ -612,27 +612,87 @@ def _recent_activity(args, ctx) -> dict:
                     "guess what you did or how long it took."}
 
 
-def _make_pptx(args, ctx) -> dict:
-    """Build a .pptx DIRECTLY with python-pptx: one file, always saved, and NO
-    PowerPoint window opens. Replaces driving PowerPoint by COM, which opened a
-    window per slide and often never saved."""
+_LAST_DECK_FACT = "recent_pptx"     # the deck "upgrade the ppt" means
+_LAST_DOC_FACT = "recent_docx"      # the document "edit the doc" means
+
+
+def _reveal(path: str) -> bool:
+    """Open a saved file in its default app ONCE so the Boss can SEE it.
+
+    This is showing him the finished file - NOT driving the app by COM, and not
+    the window-per-slide mess that make_pptx exists to avoid. Best-effort and
+    guarded: never pops a window during tests (PYTEST) or when told not to, and
+    never breaks the build if it cannot open."""
     import os
-    title = (args.get("title") or "Presentation").strip()
+    import sys
+    try:
+        if os.environ.get("JARVIS_NO_REVEAL") or os.environ.get(
+                "PYTEST_CURRENT_TEST"):
+            return False
+        if sys.platform.startswith("win") and os.path.exists(path):
+            os.startfile(path)                                   # noqa: S606
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _resolve_doc_path(args, default_stem: str, ext: str,
+                      last_fact: str) -> str:
+    """Where a deck/doc should be written. A filename wins; otherwise, when
+    editing, the file he last made (so "upgrade the ppt" needs no name);
+    otherwise a name from the title."""
+    import os
+    name = (args.get("filename") or args.get("path") or "").strip()
+    mode = (args.get("mode") or "auto").strip().lower()
+    title = (args.get("title") or "").strip()
+    # Fall back to "the one he last made" only when nothing names a NEW file:
+    # an explicit edit, or "upgrade the ppt" with no filename AND no new title.
+    # A new title with no filename is a NEW file, so it must NOT grab the last
+    # one (that would silently append "make a deck about Y" onto deck X).
+    if not name and (mode in ("edit", "append")
+                     or (mode == "auto" and not title)):
+        try:
+            name = (state.facts().get(last_fact) or "").strip()
+        except Exception:
+            name = ""
+    if not name:
+        name = title or default_stem
+    if not name.lower().endswith(ext):
+        name += ext
+    return name if os.path.isabs(name) else os.path.join(
+        str(safety.WORKSPACE), name)
+
+
+def _make_pptx(args, ctx) -> dict:
+    """Build OR edit a .pptx with python-pptx: one file, always saved, no
+    PowerPoint window driven by COM.
+
+    EDIT-IN-PLACE (the real fix): if the target deck already EXISTS, Jarvis
+    edits THAT SAME FILE - it loads the deck and adds the new slides - instead
+    of starting a blank one. So "make a deck, call me, now add these" continues
+    the deck he already has, NEVER a second file and NEVER a second window.
+    mode='replace' is the ONLY way to rebuild from scratch and is never the
+    default, because silently overwriting his deck would destroy its contents -
+    the same loss the deletion rule exists to prevent. After saving it reopens
+    the file so he can see it (open_after, default true)."""
+    import os
+    title = (args.get("title") or "").strip()
     slides = args.get("slides") or []
-    name = (args.get("filename") or title or "presentation").strip()
-    if not name.lower().endswith(".pptx"):
-        name += ".pptx"
-    path = name if os.path.isabs(name) else os.path.join(str(safety.WORKSPACE),
-                                                         name)
+    mode = (args.get("mode") or "auto").strip().lower()
+    path = _resolve_doc_path(args, "presentation", ".pptx", _LAST_DECK_FACT)
+    editing = os.path.exists(path) and mode != "replace"
     try:
         from pptx import Presentation
-        prs = Presentation()
-        try:
-            prs.core_properties.title = title    # deck title = metadata, NOT a slide
-        except Exception:
-            pass
+        prs = Presentation(path) if editing else Presentation()
+        if title and not editing:
+            try:
+                prs.core_properties.title = title  # deck title = metadata, NOT a slide
+            except Exception:
+                pass
         # EXACTLY the slides asked for - "four slides" means four slides, not
-        # four plus a surprise title slide (that mismatch is its own bug).
+        # four plus a surprise title slide (that mismatch is its own bug). When
+        # editing, these are ADDED to the deck he already has.
         for sl in slides:
             if isinstance(sl, str):
                 sl = {"title": sl}
@@ -649,30 +709,41 @@ def _make_pptx(args, ctx) -> dict:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         prs.save(path)
         n = len(prs.slides)
-        return {"ok": True, "path": path, "slides": n,
-                "note": f"Saved a {n}-slide deck to {path}. One file, saved on "
-                        f"disk - no PowerPoint window was opened."}
+        try:
+            state.set_fact(_LAST_DECK_FACT, path)     # so "the ppt" resolves next time
+        except Exception:
+            pass
+        opened = _reveal(path) if args.get("open_after", True) else False
+        verb = "Edited" if editing else "Saved"
+        tail = (" and opened it so you can see it." if opened else " on disk.")
+        return {"ok": True, "path": path, "slides": n, "edited": editing,
+                "opened": opened,
+                "note": f"{verb} the deck '{os.path.basename(path)}' - now {n} "
+                        f"slides, ONE file{tail} No second window, no new file."}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 def _make_docx(args, ctx) -> dict:
-    """Build a .docx DIRECTLY with python-docx: one file, always saved, and NO
-    Word window opens. The Word twin of make_pptx - for letters, reports, notes,
-    any document, instead of driving Word by COM."""
+    """Build OR edit a .docx with python-docx: one file, always saved, no Word
+    window driven by COM. The Word twin of make_pptx.
+
+    EDIT-IN-PLACE: if the document already exists, Jarvis edits THAT SAME FILE
+    (loads it and appends the new sections) rather than starting blank, so
+    "add a paragraph to the letter" continues the file he has - no second file,
+    no second window. mode='replace' rebuilds from scratch and is never the
+    default. Reopens the file afterwards so he can see it (open_after)."""
     import os
     title = (args.get("title") or "").strip()
-    name = (args.get("filename") or title or "document").strip()
-    if not name.lower().endswith(".docx"):
-        name += ".docx"
-    path = name if os.path.isabs(name) else os.path.join(str(safety.WORKSPACE),
-                                                         name)
+    mode = (args.get("mode") or "auto").strip().lower()
+    path = _resolve_doc_path(args, "document", ".docx", _LAST_DOC_FACT)
+    editing = os.path.exists(path) and mode != "replace"
     sections = args.get("sections")
     body = args.get("body")
     try:
         from docx import Document
-        doc = Document()
-        if title:
+        doc = Document(path) if editing else Document()
+        if title and not editing:
             doc.add_heading(title, level=0)
         # Two shapes, whichever the model sends: a list of {heading, text} /
         # {heading, bullets} sections, or one plain body string.
@@ -695,9 +766,18 @@ def _make_docx(args, ctx) -> dict:
                 doc.add_paragraph(para)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         doc.save(path)
+        try:
+            state.set_fact(_LAST_DOC_FACT, path)      # so "the doc" resolves next time
+        except Exception:
+            pass
+        opened = _reveal(path) if args.get("open_after", True) else False
+        verb = "Edited" if editing else "Saved"
+        tail = (" and opened it so you can see it." if opened else " on disk.")
         return {"ok": True, "path": path, "paragraphs": len(doc.paragraphs),
-                "note": f"Saved a Word document to {path}. One file, saved on "
-                        f"disk - no Word window was opened."}
+                "edited": editing, "opened": opened,
+                "note": f"{verb} the Word document "
+                        f"'{os.path.basename(path)}' - ONE file{tail} No second "
+                        f"window, no new file."}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -1132,28 +1212,44 @@ API_USAGE = _t("api_usage",
     {"period": {"type": "string"}}, [], _api_usage)
 
 MAKE_PPTX = _t("make_pptx",
-    "Create a PowerPoint (.pptx) and SAVE it - built directly, so NO PowerPoint "
-    "window opens and it is always written to disk. Use THIS for any deck; never "
-    "drive PowerPoint by COM/run_python (that opened a window per slide and "
-    "often never saved). Give a title and a list of slides, each an object "
-    "{title, bullets:[...]}. 'four slides' means four entries in the list, ONE "
-    "file.",
+    "Create OR edit a PowerPoint (.pptx) and SAVE it - built directly, so NO "
+    "PowerPoint window is driven by COM. Use THIS for any deck; never drive "
+    "PowerPoint by COM/run_python. Give a title and a list of slides, each "
+    "{title, bullets:[...]}. 'four slides' means four entries, ONE file. "
+    "TO UPGRADE/EDIT A DECK YOU ALREADY MADE (e.g. he said make it, then told "
+    "you changes), call this AGAIN with the SAME `filename` - or omit filename "
+    "to edit the LAST deck - and the NEW slides: it edits that SAME FILE in "
+    "place (adds the slides) and NEVER opens a second window or a new file. It "
+    "reopens the saved file so he can see it. mode: 'auto' (default - edit the "
+    "file if it exists, else make a new one), or 'replace' ONLY if he says "
+    "start the deck over from scratch.",
     {"title": {"type": "string"},
-     "filename": {"type": "string", "description": "optional .pptx name"},
-     "slides": {"type": "array", "items": {"type": "object"}}},
-    ["title", "slides"], _make_pptx)
+     "filename": {"type": "string",
+                  "description": "the .pptx to make OR edit; omit to edit the last deck"},
+     "slides": {"type": "array", "items": {"type": "object"}},
+     "mode": {"type": "string", "enum": ["auto", "replace"]},
+     "open_after": {"type": "boolean",
+                    "description": "reopen the saved file to show him (default true)"}},
+    ["slides"], _make_pptx)
 
 MAKE_DOCX = _t("make_docx",
-    "Create a Word document (.docx) and SAVE it - built directly, so NO Word "
-    "window opens and it is always written to disk. Use THIS for any document "
-    "(letter, report, notes); never drive Word by COM/run_python. Give a title "
-    "and either `sections` (a list of {heading, text or bullets:[...]}) or a "
-    "plain `body` string.",
+    "Create OR edit a Word document (.docx) and SAVE it - built directly, so NO "
+    "Word window is driven by COM. Use THIS for any document (letter, report, "
+    "notes); never drive Word by COM/run_python. Give a title and either "
+    "`sections` (a list of {heading, text or bullets:[...]}) or a plain `body`. "
+    "TO EDIT A DOCUMENT YOU ALREADY MADE, call again with the SAME `filename` "
+    "(or omit it to edit the last one): it adds to that SAME FILE in place, no "
+    "second window, no new file, and reopens it. mode 'auto' (default) edits an "
+    "existing file else makes a new one; 'replace' rebuilds from scratch.",
     {"title": {"type": "string"},
-     "filename": {"type": "string", "description": "optional .docx name"},
+     "filename": {"type": "string",
+                  "description": "the .docx to make OR edit; omit to edit the last one"},
      "sections": {"type": "array", "items": {"type": "object"}},
-     "body": {"type": "string"}},
-    ["title"], _make_docx)
+     "body": {"type": "string"},
+     "mode": {"type": "string", "enum": ["auto", "replace"]},
+     "open_after": {"type": "boolean",
+                    "description": "reopen the saved file to show him (default true)"}},
+    [], _make_docx)
 
 CALL_ME = _t("call_me",
     "Place a REAL phone call to the Boss over Twilio and speak a short message - "
@@ -1369,7 +1465,7 @@ You lead a small team of specialists and you decide who does what. Hand a job to
   comms    - WhatsApp and Telegram. It OPENS the app itself, finds the contact safely over the app's own protocol, sends, and verifies. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
   coder    - read/write code and work with GitHub
 For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot. If a saved skill (a tool marked "[saved skill]") already does what is asked, just call it. When run_python solves something non-trivial that the Boss is likely to want again, call save_skill to crystallize it, so next time it is one call.
-To make a PowerPoint/deck, use make_pptx; to make a Word document, use make_docx - each writes ONE saved file with no app window. "Four slides" means four entries in the slides list, NOT four files or four windows. Never drive PowerPoint or Word by COM.
+To make a PowerPoint/deck, use make_pptx; to make a Word document, use make_docx - each writes ONE saved file with no app window driven by COM. "Four slides" means four entries in the slides list, NOT four files or four windows. Never drive PowerPoint or Word by COM. To UPGRADE OR EDIT a deck/doc you already made (he says "make it", then "now add/change this"), call make_pptx/make_docx AGAIN with the SAME filename (or omit it to edit the last one) - it edits that SAME FILE in place and reopens it; NEVER open the app to edit, NEVER make a second file or a second window for an edit. If he says "call me before saving", build the deck, call_me, and when he gives changes, EDIT THE SAME FILE - do not start a new one.
 
 ROUTING - this is where turns go wrong, so get it right:
 - Messaging ANYONE on WhatsApp or Telegram is ONE comms call, and ONLY comms. comms opens the app itself, so NEVER send "open whatsapp" to desktop as a separate step, and never try to drive a chat app any other way. "open whatsapp and message Kap Cut hi" = one comms call: "send the WhatsApp message 'hi' to Kap Cut".
@@ -1669,12 +1765,37 @@ def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
     return fixed or reply
 
 
+# ── ONE brain across every door the OWNER speaks through ──────────────────────
+# Desk chat, the desk mic, the phone and Telegram are all HIM, so with no
+# contact and no caller-named thread they share ONE conversation thread: a deck
+# he set up on Telegram is known on a later call, and "carry on" means the same
+# thing whichever door he says it through. This fixes the real complaint - each
+# transport used to keep its own memory, so a call did not know what Telegram
+# had just agreed. A conversation WITH A CONTACT keeps its own thread (by jid),
+# and a background job or mission names its own channel explicitly - those stay
+# separate on purpose.
+OWNER_CHANNEL = "chan:boss"
+
+
+def channel_for(transport: Transport, jid: str = "", explicit: str = "") -> str:
+    """The conversation thread a turn belongs to.
+
+    explicit wins (a mission/worker thread the caller named); then a contact
+    (by jid, its own thread); otherwise the owner's one shared thread, whatever
+    door he came through."""
+    if explicit:
+        return explicit
+    if jid:
+        return f"chan:contact:{jid}"
+    return OWNER_CHANNEL
+
+
 def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
              channel: str = "", user_confirmed: bool = False) -> str:
     """Run one turn through the orchestrator. Never raises."""
     import os
     emit = emit or (lambda ev: None)
-    channel = channel or f"chan:{transport.value}"
+    channel = channel_for(transport, jid, channel)
     brain._remember_turn(channel, "in", text)
 
     # THE FAST PATH - the single biggest "within seconds" win. "open chrome",
@@ -1823,8 +1944,9 @@ def voice_dispatcher(transport: Transport, emit):
     not two."""
     def dispatch(name: str, args: dict) -> dict:
         if name == "handle_request":
-            reply = run_turn(args.get("request", ""), transport, emit=emit,
-                             channel=f"chan:{transport.value}")
+            # No channel= here: voice (desk mic / phone) joins the owner's one
+            # shared thread, so a call continues what he set up on Telegram.
+            reply = run_turn(args.get("request", ""), transport, emit=emit)
             return {"ok": True, "spoken": reply}
         return {"ok": False, "error": f"voice has no tool named {name!r}"}
     return dispatch

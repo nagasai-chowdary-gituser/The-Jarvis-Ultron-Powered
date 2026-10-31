@@ -213,7 +213,7 @@ def test_whatsapp_read_reports_a_real_failure_not_silence(db, monkeypatch):
 
 # ── it knows what it did, makes real files, and is honest about calling ───────
 
-def test_make_pptx_writes_exactly_the_slides_asked_for(tmp_path):
+def test_make_pptx_writes_exactly_the_slides_asked_for(tmp_path, db):
     out = agent_core._make_pptx(
         {"title": "2026 Nepal Floods",
          "filename": str(tmp_path / "nepal.pptx"),
@@ -227,7 +227,7 @@ def test_make_pptx_writes_exactly_the_slides_asked_for(tmp_path):
     assert p.exists() and p.stat().st_size > 0        # actually saved to disk
 
 
-def test_make_docx_writes_a_real_saved_word_file(tmp_path):
+def test_make_docx_writes_a_real_saved_word_file(tmp_path, db):
     out = agent_core._make_docx(
         {"title": "Flood Response Plan",
          "filename": str(tmp_path / "plan.docx"),
@@ -243,11 +243,96 @@ def test_make_docx_writes_a_real_saved_word_file(tmp_path):
     assert "Flood Response Plan" in text and "evacuate" in text
 
 
-def test_make_docx_accepts_a_plain_body(tmp_path):
+def test_make_docx_accepts_a_plain_body(tmp_path, db):
     out = agent_core._make_docx(
         {"title": "Note", "filename": str(tmp_path / "note.docx"),
          "body": "line one\nline two"}, _ctx())
     assert out["ok"] and Path(out["path"]).exists()
+
+
+def test_make_pptx_edits_the_same_file_not_a_new_window(tmp_path, db):
+    """The real bug: 'make a deck, now add to it' must continue the SAME file,
+    never a second file or a second window."""
+    f = str(tmp_path / "deck.pptx")
+    first = agent_core._make_pptx(
+        {"title": "Launch", "filename": f,
+         "slides": [{"title": "One"}, {"title": "Two"}]}, _ctx())
+    assert first["ok"] and first["slides"] == 2 and first["edited"] is False
+
+    # "now add these upgrades" - same filename, so it EDITS in place.
+    second = agent_core._make_pptx(
+        {"filename": f, "mode": "auto",
+         "slides": [{"title": "Three", "bullets": ["new point"]}]}, _ctx())
+    assert second["ok"] and second["edited"] is True   # edited, not rebuilt
+    assert second["path"] == first["path"]             # the SAME file
+    assert second["slides"] == 3                        # 2 kept + 1 added
+
+    from pptx import Presentation
+    titles = [s.shapes.title.text for s in Presentation(f).slides]
+    assert titles == ["One", "Two", "Three"]           # nothing was lost
+
+
+def test_make_pptx_upgrades_the_last_deck_with_no_filename(tmp_path, db):
+    """'upgrade the ppt' with no name given edits the deck he last made."""
+    f = str(tmp_path / "quarterly.pptx")
+    agent_core._make_pptx({"title": "Q", "filename": f,
+                           "slides": [{"title": "Intro"}]}, _ctx())
+    out = agent_core._make_pptx(
+        {"mode": "edit", "slides": [{"title": "Appendix"}]}, _ctx())
+    assert out["ok"] and out["path"] == f and out["slides"] == 2
+
+
+def test_make_pptx_replace_rebuilds_from_scratch(tmp_path, db):
+    f = str(tmp_path / "d.pptx")
+    agent_core._make_pptx({"title": "A", "filename": f,
+                           "slides": [{"title": "Old1"}, {"title": "Old2"}]},
+                          _ctx())
+    out = agent_core._make_pptx(
+        {"title": "A", "filename": f, "mode": "replace",
+         "slides": [{"title": "Fresh"}]}, _ctx())
+    assert out["ok"] and out["edited"] is False and out["slides"] == 1
+
+
+def test_a_new_titled_deck_does_not_append_to_the_last_one(tmp_path, db, monkeypatch):
+    """Two 'make a deck about X' / 'about Y' calls (no filename) are TWO decks,
+    not an append onto the first - a new title means a new file."""
+    monkeypatch.setattr(safety, "WORKSPACE", tmp_path)
+    a = agent_core._make_pptx(
+        {"title": "Nepal Floods", "slides": [{"title": "One"}]}, _ctx())
+    b = agent_core._make_pptx(
+        {"title": "Mars Mission", "slides": [{"title": "Two"}]}, _ctx())
+    assert a["ok"] and b["ok"]
+    assert a["path"] != b["path"]            # distinct files
+    assert b["edited"] is False and b["slides"] == 1   # fresh, not appended
+
+
+# ── ONE brain across every door the Boss speaks through ───────────────────────
+
+def test_owner_channels_share_one_conversation():
+    """Desk chat, desk mic, phone and Telegram are all the Boss, so with no
+    contact they resolve to ONE thread - the unified-memory fix. A conversation
+    WITH A CONTACT, or a caller-named background thread, stays separate."""
+    desk = agent_core.channel_for(Transport.DESK)
+    phone = agent_core.channel_for(Transport.PHONE)
+    tg = agent_core.channel_for(Transport.TELEGRAM)
+    assert desk == phone == tg == agent_core.OWNER_CHANNEL
+    # a mission/worker thread the caller names explicitly stays its own
+    assert agent_core.channel_for(
+        Transport.WORKER, explicit="chan:mission:7") == "chan:mission:7"
+    # a chat WITH someone else is not the Boss's thread
+    contact = agent_core.channel_for(Transport.DESK, jid="x@s.whatsapp.net")
+    assert contact != agent_core.OWNER_CHANNEL and "x@s.whatsapp.net" in contact
+
+
+def test_job_report_lands_in_the_owner_thread(db):
+    """A background job's finding goes into the Boss's ONE conversation, so a
+    follow-up on ANY door knows it - set it up on Telegram, ask on a call."""
+    import brain
+    import worker
+    worker._remember_for_owner("Mission done - the deck upgrade is saved.")
+    lines = brain._recent_turns(agent_core.OWNER_CHANNEL)
+    joined = " ".join(str(m.get("content", "")) for m in lines)
+    assert "deck upgrade" in joined
 
 
 def test_activity_log_lets_jarvis_answer_for_itself(db):
@@ -436,6 +521,25 @@ def test_locate_reports_not_found_cleanly(monkeypatch):
     monkeypatch.setattr(vision, "_grid_pick", lambda img, t, c, r: None)
     out = vision.locate("a purple unicorn")
     assert out["ok"] and out["found"] is False
+
+
+def test_grounding_uses_the_stronger_model(monkeypatch):
+    """Grounding - 'which numbered cell is this control in' - runs on the
+    stronger OpenAI model, not the cheap reader. That is the trio-intelligence
+    fix (gpt-4o-mini used to punt to the centre), and it stays on ONE key."""
+    from PIL import Image
+
+    from lib import vision
+    seen = {}
+
+    def fake_ask(img, question, model=vision.VISION_MODEL):
+        seen["model"] = model
+        return '{"found": true, "cell": 1}'
+
+    monkeypatch.setattr(vision, "_ask", fake_ask)
+    vision._grid_pick(Image.new("RGB", (400, 300)), "the OK button", 4, 3)
+    assert seen["model"] == vision.GROUND_MODEL           # the stronger one
+    assert vision.GROUND_MODEL != vision.VISION_MODEL     # genuinely different
 
 
 # ── review fixes: api bill, cursor yield, budget, no duplicate app ────────────

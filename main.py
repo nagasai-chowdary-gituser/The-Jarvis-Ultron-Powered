@@ -118,15 +118,16 @@ async def hud_socket(ws: WebSocket) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def handle(text: str, transport: Transport, jid: str = "") -> str:
-    """One message in, one reply out - but NOT one conversation each.
+    """One message in, one reply out, on the Boss's ONE conversation.
 
     A new Brain is built per message, which is correct (it keeps state small
     and survives crashes), but it used to mean a new blank CONVERSATION per
-    message too. Passing the channel gives the Brain somewhere to load the
-    last few turns from, so "yes, proceed" still knows what it is proceeding
-    with. Each door keeps its own thread: a phone call does not inherit the
-    middle of a Telegram exchange."""
-    channel = f"chan:{transport.value}"
+    message too. The channel gives it somewhere to load the last few turns
+    from, so "yes, proceed" still knows what it is proceeding with. Every door
+    the Boss speaks through - desk chat, desk mic, phone, Telegram - shares ONE
+    thread now (agent_core.channel_for), so a task he set up on Telegram is
+    known on a later call. A conversation WITH A CONTACT keeps its own thread."""
+    channel = agent_core.channel_for(transport, jid)
     emit({"type": "heard", "text": text, "via": transport.value})
     # The new multi-agent core (terra orchestrator + luna specialists + MCP).
     # JARVIS_LEGACY_BRAIN=1 falls back to the old flat 4-tool brain, kept as an

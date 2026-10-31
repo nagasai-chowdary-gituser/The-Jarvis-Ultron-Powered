@@ -22,8 +22,17 @@ import io
 import models
 
 # gpt-4o-mini: vision-capable, ~5x faster and cheaper than luna on an image,
-# and just as accurate reading on-screen text (verified live).
+# and just as accurate READING on-screen text (verified live). So it stays the
+# eyes for see_screen / see_image - plain OCR-ish reading.
 VISION_MODEL = getattr(models, "VISION_FAST", "gpt-4o-mini")
+
+# GROUNDING is a different, harder job: "which numbered cell is this control
+# in" is spatial reasoning, and gpt-4o-mini is weak at it (it used to punt to
+# the image centre - the "dumb trio"). The stronger OpenAI model does it much
+# better, and the Boss wants ONE OpenAI key, no second provider - so grounding
+# runs on luna (the same key), reading stays on the cheap fast model. locate()
+# fires only for no-handle targets, so the extra cost is rare and worth it.
+GROUND_MODEL = getattr(models, "VISION", "gpt-5.6-luna")
 MAX_SIDE = 1400          # downscale before sending - cost scales with pixels
 
 
@@ -41,19 +50,19 @@ def _b64_png(img) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _ask(img, question: str) -> str:
+def _ask(img, question: str, model: str = VISION_MODEL) -> str:
     from openai import OpenAI
     b64 = _b64_png(_downscale(img))
     q = question.strip() or ("Describe what is on this screen in one or two "
                              "sentences, including any important text.")
     r = OpenAI(timeout=45, max_retries=1).responses.create(
-        model=VISION_MODEL,
+        model=model,
         input=[{"role": "user", "content": [
             {"type": "input_text", "text": q},
             {"type": "input_image",
              "image_url": f"data:image/png;base64,{b64}"}]}],
         max_output_tokens=800, store=False)
-    models.record(r, VISION_MODEL)
+    models.record(r, model)
     return (r.output_text or "").strip()
 
 
@@ -121,8 +130,10 @@ def _grid_pick(img, target: str, cols: int, rows: int):
         f"A grid of numbered yellow cells (1 to {cols * rows}, numbered "
         f"left-to-right then top-to-bottom) is drawn over this image. Which "
         f"SINGLE numbered cell is centred on (or most contains) {target}? "
-        'Return ONLY JSON: {"found": true|false, "cell": <number>}.')
-    raw = _ask(marked, prompt)
+        "Look carefully at where the target actually is; do not default to the "
+        "middle of the image. If the target is simply not visible, say found "
+        'false. Return ONLY JSON: {"found": true|false, "cell": <number>}.')
+    raw = _ask(marked, prompt, model=GROUND_MODEL)
     try:
         a, b = raw.find("{"), raw.rfind("}")
         obj = _json.loads(raw[a:b + 1]) if (a >= 0 and b > a) else {}
@@ -151,7 +162,7 @@ def locate(target: str) -> dict:
 
     try:
         ds = _downscale(grab)
-        cell = _grid_pick(ds, target, 6, 4)          # COARSE
+        cell = _grid_pick(ds, target, 7, 5)          # COARSE - finer now
     except Exception as e:
         return {"ok": False, "error": f"vision model: {type(e).__name__}: {e}"}
     if cell is None:
@@ -172,7 +183,7 @@ def locate(target: str) -> dict:
         top = int(min(max(py - ch / 2, 0), max(0, cap_h - ch)))
         crop = grab.crop((left, top, int(left + cw), int(top + ch)))
         cds = _downscale(crop, max_side=900)
-        fine = _grid_pick(cds, target, 5, 4)
+        fine = _grid_pick(cds, target, 6, 4)
         if fine is not None:
             fx = (fine[0] + fine[2]) / 2 * crop.size[0] / cds.size[0]
             fy = (fine[1] + fine[3]) / 2 * crop.size[1] / cds.size[1]
