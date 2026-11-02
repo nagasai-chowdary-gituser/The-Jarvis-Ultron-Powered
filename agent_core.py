@@ -570,6 +570,56 @@ def _delete_jobs(args, ctx) -> dict:
             "note": f"removed {removed} job(s) matching {which!r}"}
 
 
+def _held_tasks() -> list[dict]:
+    """Tasks paused on restart, waiting for the Boss to say resume or drop."""
+    try:
+        return [j for j in state.jobs("held")]
+    except Exception:
+        return []
+
+
+def _held_tasks_block() -> str:
+    """A short context line so the orchestrator knows there are paused tasks and
+    can act on 'resume'/'drop' - only present while some are held."""
+    held = _held_tasks()
+    if not held:
+        return ""
+    names = []
+    for j in held:
+        try:
+            p = j.get("params")
+            p = json.loads(p) if isinstance(p, str) else (p or {})
+        except Exception:
+            p = {}
+        names.append((p.get("goal") or p.get("request") or p.get("task")
+                      or j.get("kind", "task"))[:50])
+    listing = "; ".join(f"{i + 1}) {n}" for i, n in enumerate(names))
+    return (f"\nPAUSED TASKS AWAITING HIS DECISION ({len(held)}): {listing}. "
+            f"These were running before the last restart and are paused. If he "
+            f"says resume/continue/yes, call resume_tasks('resume'); if he says "
+            f"drop/cancel/no, call resume_tasks('drop').\n")
+
+
+def _resume_tasks(args, ctx) -> dict:
+    """Resume or drop the tasks paused on restart. action='resume' puts them
+    back to work; action='drop' cancels them."""
+    action = str(args.get("action", "")).strip().lower()
+    held = _held_tasks()
+    if not held:
+        return {"ok": True, "note": "There are no paused tasks right now."}
+    if action in ("drop", "cancel", "no", "stop"):
+        n = sum(1 for j in held if state.delete_job(j["id"]))
+        return {"ok": True, "dropped": n,
+                "note": f"Dropped {n} paused task(s)."}
+    # default / resume
+    n = 0
+    for j in held:
+        state.resume_job(j["id"])
+        n += 1
+    return {"ok": True, "resumed": n,
+            "note": f"Resumed {n} task(s); the worker will pick them up."}
+
+
 def _message_boss(args, ctx) -> dict:
     from lib import phone
     return {"ok": True, "message_id": phone.message(args.get("text", ""))}
@@ -1200,6 +1250,14 @@ DELETE_JOBS = _t("delete_jobs",
     "contact). Use when the Boss says to stop/remove/delete a job or all jobs.",
     {"which": {"type": "string"}}, ["which"], _delete_jobs)
 
+RESUME_TASKS = _t("resume_tasks",
+    "Resume or drop the tasks that were PAUSED on restart (they were running "
+    "before Jarvis was restarted and are waiting for his decision). Use it ONLY "
+    "when there are paused tasks (the context says so) and he answers: "
+    "action='resume' continues them, action='drop' cancels them.",
+    {"action": {"type": "string", "enum": ["resume", "drop"]}},
+    ["action"], _resume_tasks)
+
 MESSAGE_BOSS = _t("message_boss", "Send the Boss a Telegram message.",
     {"text": {"type": "string"}}, ["text"], _message_boss)
 
@@ -1687,7 +1745,8 @@ def build_team(force: bool = False) -> Agent:
                   (files, browser, desktop, research, comms, coder)]
     orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, MAKE_PPTX,
                    MAKE_DOCX, RECENT_ACTIVITY, API_USAGE, CALL_ME, REMEMBER,
-                   RECALL, SCHEDULE_JOB, DELETE_JOBS, ASK_BOSS, MESSAGE_BOSS,
+                   RECALL, SCHEDULE_JOB, DELETE_JOBS, RESUME_TASKS, ASK_BOSS,
+                   MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN,
                    LOCATE_ON_SCREEN, CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY,
                    CURSOR_SCROLL, SCREEN_INFO]
@@ -1906,6 +1965,7 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
                + memory.preferences_block()             # how he likes things done
                + brain.rolling_summary(channel)         # recap of the older chat
                + memory.recall_block(text)
+               + _held_tasks_block()                    # tasks paused on restart
                + (state.as_context(jid) if jid else ""))
     import time as _time
     _turn_t0 = _time.time()              # so lessons learn from THIS turn's trace

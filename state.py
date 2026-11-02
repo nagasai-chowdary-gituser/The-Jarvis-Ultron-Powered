@@ -399,6 +399,25 @@ def finish_job(job_id: int, result: str = "", status: str = "done",
         c.close()
 
 
+def hold_job(job_id: int, note: str = "paused on restart",
+             db_path: Path | None = None) -> None:
+    """Pause a job: status 'held', so due_jobs() does not run it. Used on restart
+    to stop active work resuming silently until the Boss says to."""
+    finish_job(job_id, note, "held", db_path)
+
+
+def resume_job(job_id: int, db_path: Path | None = None) -> None:
+    """Un-pause a held job: back to pending and due now, so the worker picks it
+    up on its next tick."""
+    c = _conn(db_path)
+    try:
+        c.execute("UPDATE jobs SET status='pending', next_run_at=? WHERE id=?",
+                  (time.time(), job_id))
+        c.commit()
+    finally:
+        c.close()
+
+
 def job(job_id: int, db_path: Path | None = None) -> dict | None:
     c = _conn(db_path)
     try:

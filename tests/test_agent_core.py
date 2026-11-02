@@ -356,6 +356,34 @@ def test_a_contact_thread_persists_across_runs(db, monkeypatch):
     assert any("earlier hello" in m["content"] for m in lines)       # kept anyway
 
 
+# ── resume-or-drop the tasks paused on restart ────────────────────────────────
+
+def test_resume_tasks_puts_paused_work_back(db):
+    m = state.add_job("mission", {"goal": "x"})
+    state.hold_job(m)
+    assert state.job(m)["status"] == "held"
+    out = agent_core._resume_tasks({"action": "resume"}, _ctx())
+    assert out["ok"] and out["resumed"] == 1
+    assert state.job(m)["status"] == "pending"      # the worker will pick it up
+
+
+def test_drop_tasks_cancels_paused_work(db):
+    m = state.add_job("mission", {"goal": "x"})
+    state.hold_job(m)
+    out = agent_core._resume_tasks({"action": "drop"}, _ctx())
+    assert out["ok"] and out["dropped"] == 1
+    assert state.job(m) is None                     # cancelled, per his rule
+
+
+def test_held_tasks_surface_in_context_only_when_paused(db):
+    assert agent_core._held_tasks_block() == ""     # nothing paused -> no nagging
+    m = state.add_job("mission", {"goal": "upgrade the deck"})
+    state.hold_job(m)
+    block = agent_core._held_tasks_block()
+    assert "PAUSED TASKS" in block and "upgrade the deck" in block
+    assert "resume_tasks" in block                  # tells the model how to act
+
+
 def test_activity_log_lets_jarvis_answer_for_itself(db):
     state.record_action("make_pptx", True, 1800, "saved nepal.pptx",
                         channel="chan:test")

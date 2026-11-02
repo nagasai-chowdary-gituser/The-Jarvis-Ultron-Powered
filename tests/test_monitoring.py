@@ -49,6 +49,45 @@ def test_watch_poll_is_fast(db):
     assert worker.TICK_S <= 4
 
 
+# ── restart asks before resuming active work (owner's rule) ───────────────────
+
+def test_restart_pauses_active_work_and_asks(db, monkeypatch):
+    asked = []
+    monkeypatch.setattr(worker, "tell_boss",
+                        lambda text, **k: asked.append(text) or True)
+    m = state.add_job("mission", {"goal": "upgrade the deck"})
+    a = state.add_job("agent_task", {"request": "download the report"})
+    r = state.add_job("reminder", {"text": "call mom at 5"})
+    w = state.add_job("watch_chat", {"contact": "Kapcut"})
+
+    out = worker.startup_resume_gate()
+
+    assert out["held"] == 2                        # mission + agent_task paused
+    assert state.job(m)["status"] == "held"
+    assert state.job(a)["status"] == "held"
+    assert state.job(r)["status"] == "pending"     # reminder keeps running
+    assert state.job(w)["status"] == "pending"     # watch keeps running
+    assert asked and "resume" in asked[0].lower() and "drop" in asked[0].lower()
+    assert "upgrade the deck" in asked[0]          # named, so he knows what
+
+
+def test_restart_with_no_active_work_asks_nothing(db, monkeypatch):
+    asked = []
+    monkeypatch.setattr(worker, "tell_boss", lambda text, **k: asked.append(text))
+    state.add_job("reminder", {"text": "x"})
+    out = worker.startup_resume_gate()
+    assert out["held"] == 0 and asked == []        # nothing to interrupt him about
+
+
+def test_a_paused_task_never_resumed_is_dropped_next_restart(db, monkeypatch):
+    monkeypatch.setattr(worker, "tell_boss", lambda *a, **k: True)
+    m = state.add_job("mission", {"goal": "x"})
+    worker.startup_resume_gate()                   # restart 1: pauses + asks
+    assert state.job(m)["status"] == "held"
+    out = worker.startup_resume_gate()             # restart 2: he never resumed
+    assert out["dropped"] == 1 and state.job(m) is None    # dropped, per his rule
+
+
 # ── urgent detection (bug 2b) ─────────────────────────────────────────────────
 
 def _fake_whatsapp(monkeypatch, incoming, sent):

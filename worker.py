@@ -659,6 +659,55 @@ KINDS = {"watch_chat": watch_chat, "reminder": reminder,
 MONITOR_KINDS = {"poll_url", "check_process"}
 
 
+# Kinds that are ACTIVE WORK - a goal Jarvis was carrying out. On restart these
+# must NOT resume silently; they pause and ask the Boss. Reminders, chat-watches
+# and monitors are NOT here: they are waiting for a time or an event, not a task
+# in progress, so they keep running on their own.
+RESUMABLE_WORK = {"agent_task", "mission"}
+
+
+def _work_label(job: dict) -> str:
+    """A short human name for a paused task, from its own request/goal text."""
+    try:
+        p = job.get("params")
+        p = json.loads(p) if isinstance(p, str) else (p or {})
+    except Exception:
+        p = {}
+    text = (p.get("goal") or p.get("request") or p.get("task") or "").strip()
+    return (text[:60] + ("…" if len(text) > 60 else "")) or job.get("kind", "task")
+
+
+def startup_resume_gate() -> dict:
+    """On restart, do NOT silently resume the work it was doing (the owner's
+    rule: ask first). Runs once, before the loop.
+
+    1. A task HELD on an earlier restart and never resumed is dropped - any
+       'held' job seen at startup is from before, because nothing holds a job
+       mid-run, and 'ignore it = drop it' is what he chose.
+    2. This restart's leftover active work (missions / background tasks) is
+       paused and he is asked ONCE whether to resume or drop it. Reminders,
+       watches and monitors are left alone and keep running."""
+    dropped = 0
+    for j in state.jobs("held"):
+        if state.delete_job(j["id"]):
+            dropped += 1
+            log(f"dropped held job #{j['id']} (not resumed before restart)")
+
+    leftover = [j for j in state.jobs("pending") if j["kind"] in RESUMABLE_WORK]
+    labels = []
+    for j in leftover:
+        state.hold_job(j["id"])
+        labels.append(_work_label(j))
+    if labels:
+        listing = "; ".join(f"{i + 1}) {lab}" for i, lab in enumerate(labels))
+        n = len(labels)
+        tell_boss(
+            f"I was restarted and had {n} task{'s' if n != 1 else ''} going "
+            f"before: {listing}. Say 'resume' to continue, or 'drop' and I'll "
+            f"cancel them.", critical=False, force=True)
+    return {"held": len(labels), "dropped": dropped}
+
+
 def _save_params(job_id: int, params: dict) -> None:
     c = state._conn()
     try:
@@ -992,6 +1041,12 @@ def _beat() -> None:
 
 def main() -> int:
     log(f"worker up. polling every {TICK_S:.0f}s. db={state.DB_PATH}")
+    try:
+        gate = startup_resume_gate()        # ask before resuming previous work
+        if gate.get("held") or gate.get("dropped"):
+            log(f"startup gate: held {gate['held']}, dropped {gate['dropped']}")
+    except Exception:
+        log(f"startup gate failed: {traceback.format_exc()[-300:]}")
     while True:
         try:
             _beat()
