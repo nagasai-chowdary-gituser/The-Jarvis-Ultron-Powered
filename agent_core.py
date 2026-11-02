@@ -1805,29 +1805,28 @@ def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
     return reply
 
 
-# ── ONE brain across every door the OWNER speaks through ──────────────────────
-# Desk chat, the desk mic, the phone and Telegram are all HIM, so with no
-# contact and no caller-named thread they share ONE conversation thread: a deck
-# he set up on Telegram is known on a later call, and "carry on" means the same
-# thing whichever door he says it through. This fixes the real complaint - each
-# transport used to keep its own memory, so a call did not know what Telegram
-# had just agreed. A conversation WITH A CONTACT keeps its own thread (by jid),
-# and a background job or mission names its own channel explicitly - those stay
-# separate on purpose.
-OWNER_CHANNEL = "chan:boss"
+# ── SEPARATE chat per channel, ONE shared brain ──────────────────────────────
+# The owner was clear: a "single memory" means one shared MEMORY/brain, NOT the
+# same transcript on every door. Each door keeps its OWN conversation - what he
+# types on Telegram does not appear in the desk chat - while the BRAIN is shared
+# through long-term memory (facts/preferences/lessons, recalled by meaning on
+# every channel). So a task he set up on Telegram is known on a later call
+# because it was LEARNED, not because the call sees the Telegram messages.
+# Each thread is also fresh every launch (state.RUN_STARTED, applied in
+# brain._recent_turns) - a new chat each run, memory intact.
 
 
 def channel_for(transport: Transport, jid: str = "", explicit: str = "") -> str:
     """The conversation thread a turn belongs to.
 
     explicit wins (a mission/worker thread the caller named); then a contact
-    (by jid, its own thread); otherwise the owner's one shared thread, whatever
-    door he came through."""
+    (by jid, its own persistent thread); otherwise this door's own thread -
+    desk, phone and Telegram each keep a separate conversation."""
     if explicit:
         return explicit
     if jid:
         return f"chan:contact:{jid}"
-    return OWNER_CHANNEL
+    return f"chan:{transport.value}"
 
 
 def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,

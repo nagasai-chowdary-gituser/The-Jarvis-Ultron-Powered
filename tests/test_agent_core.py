@@ -306,33 +306,54 @@ def test_a_new_titled_deck_does_not_append_to_the_last_one(tmp_path, db, monkeyp
     assert b["edited"] is False and b["slides"] == 1   # fresh, not appended
 
 
-# ── ONE brain across every door the Boss speaks through ───────────────────────
+# ── separate chat per door, ONE shared brain, fresh each run ──────────────────
 
-def test_owner_channels_share_one_conversation():
-    """Desk chat, desk mic, phone and Telegram are all the Boss, so with no
-    contact they resolve to ONE thread - the unified-memory fix. A conversation
-    WITH A CONTACT, or a caller-named background thread, stays separate."""
+def test_each_door_keeps_its_own_chat():
+    """A 'single memory' is one shared BRAIN, not the same transcript on every
+    door: desk, phone and Telegram each get their OWN channel, so a Telegram
+    line never shows up in the desk chat. A contact and a named background
+    thread are their own too."""
     desk = agent_core.channel_for(Transport.DESK)
     phone = agent_core.channel_for(Transport.PHONE)
     tg = agent_core.channel_for(Transport.TELEGRAM)
-    assert desk == phone == tg == agent_core.OWNER_CHANNEL
-    # a mission/worker thread the caller names explicitly stays its own
+    assert len({desk, phone, tg}) == 3            # three SEPARATE threads
+    assert desk == "chan:desk" and tg == "chan:telegram"
     assert agent_core.channel_for(
         Transport.WORKER, explicit="chan:mission:7") == "chan:mission:7"
-    # a chat WITH someone else is not the Boss's thread
     contact = agent_core.channel_for(Transport.DESK, jid="x@s.whatsapp.net")
-    assert contact != agent_core.OWNER_CHANNEL and "x@s.whatsapp.net" in contact
+    assert "x@s.whatsapp.net" in contact and contact.startswith("chan:contact")
 
 
-def test_job_report_lands_in_the_owner_thread(db):
-    """A background job's finding goes into the Boss's ONE conversation, so a
-    follow-up on ANY door knows it - set it up on Telegram, ask on a call."""
+def test_a_previous_runs_chat_is_not_carried_in(db, monkeypatch):
+    """Fresh chat every launch (ChatGPT-style): a turn said before THIS run
+    began is not part of this run's thread."""
     import brain
-    import worker
-    worker._remember_for_owner("Mission done - the deck upgrade is saved.")
-    lines = brain._recent_turns(agent_core.OWNER_CHANNEL)
-    joined = " ".join(str(m.get("content", "")) for m in lines)
-    assert "deck upgrade" in joined
+    import time as _t
+    state.add_message("chan:desk", "in", "said in an earlier run")   # ts = now
+    monkeypatch.setattr(state, "RUN_STARTED", _t.time() + 5)         # run begins later
+    assert brain._recent_turns("chan:desk") == []                    # clean thread
+
+
+def test_this_runs_turns_are_in_the_thread(db, monkeypatch):
+    """Turns from the current run DO show - the thread works normally within a
+    launch; it just does not drag in the last one."""
+    import brain
+    import time as _t
+    monkeypatch.setattr(state, "RUN_STARTED", _t.time() - 5)         # run began earlier
+    state.add_message("chan:desk", "in", "hello this run")
+    lines = brain._recent_turns("chan:desk")
+    assert any("this run" in m["content"] for m in lines)
+
+
+def test_a_contact_thread_persists_across_runs(db, monkeypatch):
+    """The fresh-per-run rule does NOT reset a conversation WITH A CONTACT -
+    that is an ongoing relationship, so it keeps its whole history."""
+    import brain
+    import time as _t
+    state.add_message("chan:contact:kap@s.whatsapp.net", "in", "earlier hello")
+    monkeypatch.setattr(state, "RUN_STARTED", _t.time() + 60)        # a much later run
+    lines = brain._recent_turns("chan:contact:kap@s.whatsapp.net")
+    assert any("earlier hello" in m["content"] for m in lines)       # kept anyway
 
 
 def test_activity_log_lets_jarvis_answer_for_itself(db):

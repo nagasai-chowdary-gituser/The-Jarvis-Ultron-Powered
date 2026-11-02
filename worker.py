@@ -207,30 +207,19 @@ def call_boss(reason: str, job_id: int | None = None,
         return {"called": False, "why": f"{type(e).__name__}", "telegram": sent}
 
 
-def _remember_for_owner(report: str) -> None:
-    """A job's finding is something Jarvis TOLD the Boss, so it belongs in his
-    ONE conversation - then a follow-up on ANY door (a later call, a Telegram
-    line, the desk) knows it. This is what closes the "set it up on Telegram,
-    call to ask progress, and it has no idea" gap: the background work and the
-    live chat share the same thread. Best-effort; a memory hiccup never breaks
-    delivery."""
-    try:
-        import agent_core
-        import brain
-        brain._remember_turn(agent_core.OWNER_CHANNEL, "out", report)
-    except Exception:
-        pass
-
-
 def _deliver(report: str, job_id: int, urgency: str = "telegram",
              critical: bool = False) -> None:
-    """One place where a job's finding becomes an interruption."""
+    """One place where a job's finding becomes an interruption.
+
+    The finding does not get pushed into any live chat thread (that caused the
+    cross-channel bleed). Cross-channel awareness comes from MEMORY instead: the
+    worker's own turn already ran memory.capture_turn, so what matters is learned
+    and recalled on any door - without the desk chat filling up with job lines."""
     text = f"[job #{job_id}] {report}"
     if urgency == "call":
         call_boss(text, job_id, critical)
     else:
         tell_boss(text, job_id, critical)
-    _remember_for_owner(report)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

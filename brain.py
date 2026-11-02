@@ -634,6 +634,17 @@ class Brain:
 TURN_MEMORY = 12          # how many previous lines the model sees
 
 
+def _run_floor(channel: str):
+    """The earliest turn that belongs to THIS thread. A fresh chat every launch
+    (ChatGPT-style): the owner's channels only carry turns from the current run,
+    so restarting Jarvis starts a clean conversation - while long-term MEMORY
+    persists and is recalled regardless. A conversation WITH A CONTACT is an
+    ongoing relationship, so it is the exception and keeps its whole history."""
+    if not channel or channel.startswith("chan:contact"):
+        return None
+    return state.RUN_STARTED
+
+
 def _recent_turns(channel: str) -> list[dict]:
     """The last few exchanges on this channel, as plain input items.
 
@@ -645,7 +656,7 @@ def _recent_turns(channel: str) -> list[dict]:
     if not channel:
         return []
     try:
-        rows = state.history(channel, TURN_MEMORY)
+        rows = state.history(channel, TURN_MEMORY, since_ts=_run_floor(channel))
     except Exception:
         return []
     out = []
@@ -697,7 +708,7 @@ def rolling_summary(channel: str) -> str:
     if not channel:
         return ""
     try:
-        rows = state.history(channel, 80)
+        rows = state.history(channel, 80, since_ts=_run_floor(channel))
     except Exception:
         return ""
     if len(rows) <= TURN_MEMORY + 4:

@@ -47,6 +47,14 @@ DB_PATH = Path(os.environ.get("JARVIS_DB") or (ROOT / "data" / "jarvis.db"))
 CONTEXT_MESSAGES = 20
 KEEP_MESSAGES = 200          # per contact, rolling
 
+# When THIS run of Jarvis started. A FRESH CHAT every launch (ChatGPT-style):
+# a conversation only carries turns from the CURRENT run, so restarting Jarvis
+# begins a clean thread - while long-term MEMORY (facts/preferences/lessons)
+# persists in the DB and is recalled regardless. Set once per process at import,
+# so it is stable for the whole run and new on the next launch. Old turns stay in
+# the DB (audit/analysis); they are simply not shown in the new thread.
+RUN_STARTED = time.time()
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
     jid     TEXT PRIMARY KEY,
@@ -224,12 +232,20 @@ def add_message(jid: str, direction: str, text: str,
 
 
 def history(jid: str, n: int = CONTEXT_MESSAGES,
-            db_path: Path | None = None) -> list[dict]:
+            db_path: Path | None = None, since_ts: float | None = None) -> list[dict]:
+    """The last n turns of a thread. With since_ts, ONLY turns at or after that
+    time - which is how a fresh-per-run chat is built: pass state.RUN_STARTED and
+    previous runs' turns are left out of this thread (they stay in the DB)."""
     c = _conn(db_path)
     try:
-        rows = c.execute(
-            "SELECT direction, text, ts FROM messages WHERE jid=?"
-            " ORDER BY id DESC LIMIT ?", (jid, n)).fetchall()
+        if since_ts is not None:
+            rows = c.execute(
+                "SELECT direction, text, ts FROM messages WHERE jid=? AND ts>=?"
+                " ORDER BY id DESC LIMIT ?", (jid, since_ts, n)).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT direction, text, ts FROM messages WHERE jid=?"
+                " ORDER BY id DESC LIMIT ?", (jid, n)).fetchall()
     finally:
         c.close()
     return [dict(r) for r in rows][::-1]

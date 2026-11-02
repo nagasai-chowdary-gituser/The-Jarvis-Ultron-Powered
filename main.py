@@ -128,16 +128,22 @@ async def handle(text: str, transport: Transport, jid: str = "") -> str:
     thread now (agent_core.channel_for), so a task he set up on Telegram is
     known on a later call. A conversation WITH A CONTACT keeps its own thread."""
     channel = agent_core.channel_for(transport, jid)
-    emit({"type": "heard", "text": text, "via": transport.value})
+    # The desk HUD is the DESK's display. Only the desk's OWN conversation is
+    # broadcast to it - a Telegram (or other) turn must NOT appear in the desk
+    # chat (that was the bleed the owner hit). Telegram's reply still reaches him
+    # on Telegram: telegram_loop sends the RETURNED reply over the bot API, so
+    # this emit is display-only and safely silenced for non-desk doors.
+    chat_emit = emit if transport == Transport.DESK else (lambda ev: None)
+    chat_emit({"type": "heard", "text": text, "via": transport.value})
     # The new multi-agent core (terra orchestrator + luna specialists + MCP).
     # JARVIS_LEGACY_BRAIN=1 falls back to the old flat 4-tool brain, kept as an
     # escape hatch while the new core settles.
     if os.environ.get("JARVIS_LEGACY_BRAIN") == "1":
         session = Session(transport)
-        b = brain.Brain(session, jid=jid, emit=emit, channel=channel)
+        b = brain.Brain(session, jid=jid, emit=chat_emit, channel=channel)
         return await asyncio.to_thread(b.run, text)
     return await asyncio.to_thread(
-        lambda: agent_core.run_turn(text, transport, jid=jid, emit=emit,
+        lambda: agent_core.run_turn(text, transport, jid=jid, emit=chat_emit,
                                     channel=channel))
 
 
