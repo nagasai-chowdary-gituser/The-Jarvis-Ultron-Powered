@@ -451,3 +451,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t81_benchmark.py
   EXPECT: BENCHMARK_OK
   EVIDENCE: pending
+
+- [x] G82: Greeting reads real Indian time (night->evening) and reports yesterday's bill
+  CHECK: .venv\Scripts\python.exe tests\behavior\t82_greeting.py
+  EXPECT: GREETING_OK
+  EVIDENCE: pending
