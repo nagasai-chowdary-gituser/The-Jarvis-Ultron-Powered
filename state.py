@@ -93,6 +93,16 @@ CREATE TABLE IF NOT EXISTS facts (
     value      TEXT NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        REAL NOT NULL,
+    kind      TEXT NOT NULL,           -- preference | person | pattern | lesson | fact
+    text      TEXT NOT NULL,
+    norm      TEXT NOT NULL,           -- normalised, for dedup and keyword recall
+    weight    INTEGER DEFAULT 1,       -- how many times the Boss reinforced it
+    last_used REAL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory(kind);
 CREATE TABLE IF NOT EXISTS spend (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     ts     REAL NOT NULL,
@@ -495,6 +505,146 @@ def facts_block(db_path: Path | None = None) -> str:
         lines += ["", "WHAT YOU ALREADY KNOW"]
         lines += [f"- {k.replace('_', ' ')}: {v}" for k, v in f.items()]
     return "\n".join(lines) + "\n"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MEMORY THAT LEARNS — knows the Boss, is not just told
+#
+# facts/ is a key-value store the model writes to deliberately. It answers "what
+# is his college", never "he likes decks dark and under ten slides, and he always
+# calls his mother Amma". That second kind is what makes an assistant feel human
+# rather than like a fresh API call every turn, and it has to be LEARNED from how
+# he talks and CORRECTS, then brought back WHEN RELEVANT - not dumped whole into
+# every prompt.
+#
+# Retrieval is keyword overlap, deliberately: it is instant, needs no model call
+# and no embedding service, and it is good enough to surface the five things that
+# matter to the request in front of it. The relevant block is appended to the
+# per-request TAIL of the prompt, never the cached prefix, so knowing more about
+# the Boss never costs the ROLE+LIB cache (§9.2).
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MEM_KINDS = {"preference", "person", "pattern", "lesson", "fact"}
+_STOP = set((
+    "a an the is are was were be been being am i me my we our you your he she it "
+    "they them his her their to of in on at for and or but if then so with as by "
+    "from this that these those do does did have has had will would can could "
+    "want need like please always never make made get got go went want wants"
+).split())
+_SECRET = re.compile(r"sk-[A-Za-z0-9]{16,}")
+_PREF_PAT = re.compile(
+    r"\b(i (?:prefer|like|love|hate|always|never|usually|want|need)\b|"
+    r"from now on|please (?:always|never)|remember (?:that|to)|call me |"
+    r"i'?m allergic|my (?:mum|mom|mother|dad|father|wife|husband|boss|manager|"
+    r"sister|brother|partner|doctor|office|college|school) )", re.I)
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
+def _has_secret(text: str) -> bool:
+    low = (text or "").lower()
+    return bool(_SECRET.search(text or "")) or any(
+        w in low for w in ("password", "api key", "api_key", "secret key",
+                            "cvv", "pin is", "pin:", "card number"))
+
+
+def learn(kind: str, text: str, db_path: Path | None = None) -> int | None:
+    """Remember something durable about the Boss. Deduplicates on normalised
+    text and REINFORCES (weight++) when he says it again, so a repeated
+    preference outranks a one-off. Never stores a credential."""
+    text = redact(str(text or "")).strip()
+    if not text or _has_secret(text):
+        return None
+    kind = kind if kind in _MEM_KINDS else "fact"
+    norm = _norm(text)[:300]
+    if not norm:
+        return None
+    c = _conn(db_path)
+    try:
+        row = c.execute("SELECT id FROM memory WHERE norm=?", (norm,)).fetchone()
+        if row:
+            c.execute("UPDATE memory SET weight=weight+1, ts=?, kind=? WHERE id=?",
+                      (time.time(), kind, row["id"]))
+            mid = row["id"]
+        else:
+            cur = c.execute("INSERT INTO memory (ts, kind, text, norm) "
+                            "VALUES (?,?,?,?)", (time.time(), kind, text[:400], norm))
+            mid = cur.lastrowid
+        c.commit()
+        return mid
+    finally:
+        c.close()
+
+
+def memories(kind: str = "", db_path: Path | None = None) -> list[dict]:
+    """Everything learned, strongest first. Optionally filtered to one kind."""
+    c = _conn(db_path)
+    try:
+        if kind:
+            rows = c.execute("SELECT kind, text, weight FROM memory WHERE kind=? "
+                             "ORDER BY weight DESC, ts DESC", (kind,)).fetchall()
+        else:
+            rows = c.execute("SELECT kind, text, weight FROM memory "
+                             "ORDER BY weight DESC, ts DESC").fetchall()
+    finally:
+        c.close()
+    return [{"kind": r["kind"], "text": r["text"], "weight": r["weight"]}
+            for r in rows]
+
+
+def recall_relevant(query: str = "", limit: int = 6,
+                    db_path: Path | None = None) -> list[dict]:
+    """The learned items that bear on THIS request, by keyword overlap. With no
+    query, returns the strongest preferences and people - the things that define
+    him and apply to almost anything."""
+    qn = {w for w in _norm(query).split() if w not in _STOP and len(w) > 2}
+    if not qn:
+        return [m for m in memories(db_path=db_path)
+                if m["kind"] in ("preference", "person")][:limit]
+    c = _conn(db_path)
+    try:
+        rows = c.execute("SELECT kind, text, norm, weight FROM memory").fetchall()
+    finally:
+        c.close()
+    scored = []
+    for r in rows:
+        overlap = len(qn & set(r["norm"].split()))
+        if overlap:
+            score = overlap + min((r["weight"] or 1) - 1, 4) * 0.5
+            scored.append((score, {"kind": r["kind"], "text": r["text"],
+                                   "weight": r["weight"]}))
+    scored.sort(key=lambda t: -t[0])
+    return [m for _, m in scored[:limit]]
+
+
+def relevant_block(query: str = "", db_path: Path | None = None) -> str:
+    """The relevant learned memory, formatted for the per-request prompt tail."""
+    rel = recall_relevant(query, db_path=db_path)
+    if not rel:
+        return ""
+    lines = ["", "WHAT YOU KNOW ABOUT THE BOSS THAT IS RELEVANT NOW",
+             "(learned from him - honour it without being asked again)"]
+    lines += [f"- [{m['kind']}] {m['text']}" for m in rel]
+    return "\n".join(lines) + "\n"
+
+
+def extract_and_learn(text: str, db_path: Path | None = None) -> int | None:
+    """A cheap net for the preferences a person states in passing - 'I always
+    want X', 'call me Y', 'from now on Z'. The model is told to save durable
+    facts deliberately too (that is smarter); this catches the ones it would
+    miss. Conservative on purpose: only short, clearly declarative lines, never
+    a whole pasted document, and never a secret."""
+    t = (text or "").strip()
+    if not t or len(t) > 240 or _has_secret(t):
+        return None
+    if not _PREF_PAT.search(t):
+        return None
+    low = t.lower()
+    kind = "person" if (low.startswith("call me") or low.startswith("my ")) \
+        else "preference"
+    return learn(kind, t, db_path=db_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

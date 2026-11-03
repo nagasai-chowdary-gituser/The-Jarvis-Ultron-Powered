@@ -421,3 +421,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t75_hands.py
   EXPECT: HANDS_OK
   EVIDENCE: pending
+
+- [x] G76: Memory learns the Boss and recalls by relevance, never storing a secret
+  CHECK: .venv\Scripts\python.exe tests\behavior\t76_memory.py
+  EXPECT: MEMORY_OK
+  EVIDENCE: pending

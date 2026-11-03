@@ -24,7 +24,13 @@ h.need(len(brain.TOOLS) <= 6,
        f"{len(brain.TOOLS)} tools; the surface grows with every one")
 h.need(schema_tokens < 1200,
        f"tool schemas cost {schema_tokens} tokens per request")
-h.need(total < 2500, f"the whole tool surface costs {total} tokens per request")
+# Ceiling raised 2500 -> 3200 when the final-boss upgrade added four real
+# capabilities to the library - eyes (vision), hands, delegate-and-review, and
+# office. Capability lives in lib/ by design (§2), so LIB.md growing is how the
+# surface is MEANT to grow, not tool count. It is cached every request (§9), so
+# the marginal cost is ~10%. Keep new entries terse (signatures + one line); the
+# prose belongs in the module docstring, not here.
+h.need(total < 3200, f"the whole tool surface costs {total} tokens per request")
 
 # the four tools must actually be the four, not renamed stubs
 names = {t["name"] for t in brain.TOOLS}

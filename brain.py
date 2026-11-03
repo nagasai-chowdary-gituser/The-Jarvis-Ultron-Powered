@@ -103,6 +103,9 @@ Say what a tool RETURNED, never what you intended. A message is sent when send()
 
 If the Boss says you are wrong, call recall FIRST and read what is actually stored before you answer. In a real exchange the old build argued with him, then immediately did the thing it had just said was unnecessary. Check, then speak.
 
+REMEMBER HIM, DON'T MAKE HIM REPEAT
+When he tells you how he likes something done, who a person is, or corrects you, save it so it is there next turn: run_python with state.learn('preference'|'person'|'lesson', 'the thing, in his own terms'). Anything you already know that bears on this request is shown above under WHAT YOU KNOW ABOUT THE BOSS - apply it without being asked. Asking twice for something he has already told you is the fastest way to feel like a tool instead of his assistant. Never save a password, PIN or key.
+
 THE LINES YOU NEVER CROSS - his standing rules
 - You do not delete anything. Not files, not folders, not with permission, not by any route - the system refuses deletion outright and so do you. If something should go, MOVE it to a holding folder or send it to the recycle bin (both reversible) and say that is what you did.
 - You go online only when THIS task needs it. No browsing, searching, or poking at the internet on your own initiative, and nothing in the background that he did not ask for. Work, don't wander.
@@ -125,12 +128,17 @@ HOW YOU SPEAK
 Spoken replies are short - one or two sentences, no markdown, no bullet points, no emoji, because they are read aloud; numbers as a person would say them. The detail lives on the HUD and in the files you write, which cost nothing, so put the work there and keep the speech brief."""
 
 
-def system_prompt(jid: str = "") -> str:
-    """Role + rules + LIB.md + state. The cached prefix is everything but state."""
+def system_prompt(jid: str = "", query: str = "") -> str:
+    """Role + rules + LIB.md + state. The cached prefix is ROLE+LIB; everything
+    after it (facts, this contact, the memory relevant to THIS request) is the
+    per-request tail, so richer memory never costs the cache (§9.2)."""
     lib = LIB_INDEX.read_text(encoding="utf-8") if LIB_INDEX.exists() else ""
     parts = [ROLE, "\n\nWHAT YOU CAN IMPORT\n", lib, state.facts_block()]
     if jid:
         parts.append(state.as_context(jid))
+    rel = state.relevant_block(query)
+    if rel:
+        parts.append(rel)
     return "".join(parts)
 
 
@@ -414,6 +422,7 @@ def do_recall(topic: str) -> dict:
                       "recent": s["messages"][-8:]})
     found["commitments"] = state.open_commitments(t if contact else "")[:8]
     found["facts"] = state.facts()
+    found["memories"] = state.recall_relevant(t)[:6]
     found["jobs"] = [{"id": j["id"], "kind": j["kind"], "status": j["status"]}
                      for j in state.jobs("pending")[:8]]
     return {"ok": True, **found}
@@ -562,6 +571,12 @@ class Brain:
         # and answered from a template; anything with a hint of ambiguity
         # falls through to the model below.
         _remember_turn(self.channel, "in", text)
+        # Learn a preference the Boss states in passing, so he never says it
+        # twice. Conservative and never a secret (see state.extract_and_learn).
+        try:
+            state.extract_and_learn(text)
+        except Exception as e:
+            state.record_error("brain.learn", e)
 
         quick = fastpath.try_run(text)
         if quick is not None:
@@ -580,7 +595,7 @@ class Brain:
             return reply
 
         self.convo.append({"role": "user", "content": text})
-        prompt = system_prompt(self.jid)
+        prompt = system_prompt(self.jid, text)
         self._say({"type": "memory", "turns": len(self.convo) - 1})
         model, effort = models.pick(text)
         self._say({"type": "route", "model": model, "effort": effort})
