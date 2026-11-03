@@ -516,12 +516,43 @@ def maybe_brief() -> bool:
     return True
 
 
+PROACTIVE_EVERY_S = 1800              # sweep for things to flag at most each 30 min
+PROACTIVE_KEY = "_pro_last_sweep"     # "_" => kept out of the prompt
+
+
+def maybe_notice() -> int:
+    """Surface what Jarvis ANTICIPATES the Boss would want flagged - PROPOSING
+    only, never acting. Swept at most every PROACTIVE_EVERY_S; each notice carries
+    its own cooldown so it is raised once, not nagged. tell_boss still honours
+    quiet hours and the rate limits, so a 3am disk warning waits unless critical."""
+    try:
+        import proactive
+    except Exception:
+        return 0
+    now = time.time()
+    try:
+        last = float(state.facts().get(PROACTIVE_KEY) or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if now - last < PROACTIVE_EVERY_S:
+        return 0
+    state.set_fact(PROACTIVE_KEY, f"{now:.0f}")
+    sent = 0
+    for n in proactive.notices(now):
+        tell_boss(n["text"], critical=bool(n.get("critical")))
+        sent += 1
+    if sent:
+        log(f"proactive: surfaced {sent} notice(s)")
+    return sent
+
+
 def main() -> int:
     log(f"worker up. polling every {TICK_S:.0f}s. db={state.DB_PATH}")
     while True:
         try:
             tick()
             maybe_brief()
+            maybe_notice()
         except KeyboardInterrupt:
             log("worker stopped.")
             return 0

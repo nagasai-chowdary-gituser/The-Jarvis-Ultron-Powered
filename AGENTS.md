@@ -681,3 +681,42 @@ browser, so three things are proven only by construction and need a live run on
 Windows to confirm: `delegate.produce()`'s live-page selectors, `see_screen`'s
 PrintWindow path, and the real model ids resolving on his key. The design fails
 safe at each (reports what it saw; falls back to full-screen; one-line id swap).
+
+### 14.7 Hands — `lib/hands.py` (the other half of eyes)
+
+Eyes could see a button and not press it: the only click/keystroke lived in the
+browser. `hands.list_controls/click/type_text/press/focus` drive native apps over
+UI Automation (pywinauto), matching controls by their accessible NAME (survives a
+window moving or the resolution changing), with a `click_at` coordinate fallback
+paired with the eyes. Bound by the no-delete rule on the UI surface too. Needs
+Windows to run; degrades to an actionable dict off it. Gate t75.
+
+### 14.8 Memory that learns — `state.py`
+
+`facts` only stored what it was told and dumped everything into every prompt.
+`state.learn / memories / recall_relevant / relevant_block / extract_and_learn`
+add a `memory` table that is LEARNED (preferences captured in passing, reinforced
+on repeat) and RETRIEVED BY RELEVANCE into the per-request prompt tail (never the
+cached prefix). Secrets are never memorised. Gate t76.
+
+### 14.9 Recipes — `recipes.py` + `tools/`
+
+`tools/` was empty, so every repeat started from zero. `recipes.list/find/run/
+index/save` build the earned-skill system (§7): discovery on import, semantic
+lookup, and a promotion gate that refuses eval/exec/subprocess/__import__/
+importlib (phone-reachable bypasses) with `phone_safe=False` default. Gate t77.
+
+### 14.10 Self-evaluation — `state.record_outcome` / `success_summary`, `evaluate.py`
+
+Reliability was never measured, so "how good are you" could only be guessed. Every
+real turn now records how it ended; `success_summary` reads back a counted rate
+(completed = win; timeout/stuck = failure; blocked/needs_auth = handoff, not a
+failure, §5.1). `python evaluate.py [days]`. Gate t78.
+
+### 14.11 Proactivity, bounded — `proactive.py`
+
+Anticipation under one rule: NOTICE and PROPOSE, never act alone. `sweep()` is
+read-only (disk filling, a failure streak); the worker surfaces findings via
+`tell_boss` (quiet hours + rate limits honoured), deduped so a thing is flagged
+once. `may_act()` gates autonomous action to an opt-in whitelist that is empty by
+default, so "bounded" is enforced in code. Gate t79.

@@ -512,7 +512,10 @@ def facts_block(db_path: Path | None = None) -> str:
         f"- {time.strftime('%A %d %B %Y, %H:%M', now)} ({time.strftime('%Z', now)})",
         "- Compute dates with code if they matter; never recall them.",
     ]
-    f = facts(db_path=db_path)
+    # Keys starting with "_" are internal bookkeeping (proactive cooldowns, sweep
+    # timestamps) - real state, but not something to read back to the Boss, so
+    # they are kept out of the prompt he sees.
+    f = {k: v for k, v in facts(db_path=db_path).items() if not k.startswith("_")}
     if f:
         lines += ["", "WHAT YOU ALREADY KNOW"]
         lines += [f"- {k.replace('_', ' ')}: {v}" for k, v in f.items()]

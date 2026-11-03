@@ -136,6 +136,13 @@ office.make_docx(path, title=None, sections=[{heading,body}]) -> {ok,path,bytes}
 `bytes` proves it was written. Relative->workspace, absolute->honoured. Then OPEN
 and LOOK before calling it done.
 
+## proactive — anticipate, but PROPOSE (never act on your own)
+```
+proactive.sweep() -> [{key,text,critical}]  things worth flagging (read-only)
+```
+Asked "anything I should know?", sweep and tell him. You NOTICE and PROPOSE;
+acting on a finding unprompted is his call, not yours.
+
 ## desktop — API level only. There is no click, no typing into other apps.
 ```
 desktop.open_app(name)            -> launch by name

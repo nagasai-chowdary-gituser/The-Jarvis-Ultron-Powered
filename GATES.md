@@ -436,3 +436,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t78_selfeval.py
   EXPECT: SELFEVAL_OK
   EVIDENCE: pending
+
+- [x] G79: Proactivity is bounded - Jarvis notices and proposes, never acts alone
+  CHECK: .venv\Scripts\python.exe tests\behavior\t79_proactive.py
+  EXPECT: PROACTIVE_OK
+  EVIDENCE: pending
