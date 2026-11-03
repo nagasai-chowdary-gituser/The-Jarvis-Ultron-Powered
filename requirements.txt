@@ -31,6 +31,14 @@ playwright==1.49.1        # Chrome over CDP - a protocol, not pixels
 beautifulsoup4==4.12.3
 pandas==2.2.3
 pillow==11.0.0
+python-pptx==1.0.2        # lib/office.make_pptx - the light "make a deck" path
+python-docx==1.1.2        # lib/office.make_docx
+mss==9.0.1                # lib/vision full-screen grab + non-Windows fallback
+
+# Windows-only: lib/vision uses PrintWindow (win32gui/win32ui) to shoot ONE
+# window even when another overlaps it. The marker keeps `pip install` clean on
+# Linux/mac, where vision falls back to a full-screen grab via mss/Pillow.
+pywin32==308; sys_platform == "win32"
 
 # Deletion means the recycle bin, never os.remove. safety.trash() depends on it.
 send2trash==1.8.3

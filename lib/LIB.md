@@ -17,6 +17,9 @@ what day is it       it is in your prompt, under RIGHT NOW
 what machine is this from lib import desktop; desktop.stats()
 message someone      from lib import whatsapp; whatsapp.send(name, text)
 tell the Boss        from lib import phone; phone.message(text)
+see the screen       from lib import vision; vision.see_screen('what is on screen?')
+make a deck yourself from lib import office; office.make_pptx('deck', slides=[...])
+hand off + review it from lib import delegate; delegate.produce(task, prompt)
 ```
 Never invent your own storage file. `state.set_fact` IS the memory - a
 facts.txt you made up will not be read back into any later conversation.
@@ -94,6 +97,45 @@ tasks.escalate(id, need="...")     stop and ask him, saying exactly what for
 web.fetch(url, max_chars=2000)    -> str (fenced)
 web.search(q, limit=6)            -> [{title,url,snippet}]
 ```
+
+## vision — YOUR EYES. Look at the screen and read what is there.
+```
+vision.see_screen(question, window=None) -> {ok, answer, source, window}
+vision.list_windows()                     -> {ok, windows:[title,...]}
+```
+After you open, make, or change anything, LOOK - do not ask him "did it work?".
+`window` names a window to read on its own (e.g. "PowerPoint", "WhatsApp"); the
+capture uses PrintWindow, so an overlapping window does not spoil the shot.
+`source` tells you which capture path ran, so if it had to fall back to the
+full screen you know, and say so. `answer` is one factual sentence read off the
+pixels - unread counts, senders, subjects, error dialogs, whether a file opened.
+Cheaper first move: `list_windows()` - the title "(3) WhatsApp" already answers
+"how many unread".
+
+## delegate — hand the HARD part to a stronger tool, then JUDGE it
+```
+delegate.produce(task, prompt, target="chatgpt"|"claude",
+                 max_cycles=3, success_check="") -> {ok, final_text, cycles,
+                                                     verdict, transcript}
+```
+Use this when a job has to be GOOD, not when it is routine. It opens the tool in
+his own signed-in Chrome, sends `prompt`, waits for the answer, LOOKS at it,
+then a SEPARATE model judges it against `task` + `success_check`; if it is not
+good it tells that same chat what to fix and goes again, up to `max_cycles`.
+`ok` is true only if the result passed review. `final_text` is the best version;
+`verdict` says why it passed or stopped. This drives live pages, so if it reports
+it could not find the input box, the site changed or he is not signed in - say
+that plainly rather than pretending something was produced.
+
+## office — make a deck or a document YOURSELF (the light path)
+```
+office.make_pptx(path, title=None, subtitle=None,
+                 slides=[{title, bullets:[...], notes?}]) -> {ok, path, bytes}
+office.make_docx(path, title=None, sections=[{heading, body}]) -> {ok, path, bytes}
+```
+`bytes` is the proof it was written. A relative path lands in the workspace; an
+absolute path (his Desktop) is honoured. After making it, OPEN it and LOOK
+(vision.see_screen) before you call it done.
 
 ## desktop — API level only. There is no click, no typing into other apps.
 ```

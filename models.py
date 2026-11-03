@@ -11,18 +11,34 @@ sol are not.
 """
 from __future__ import annotations
 
-BRAIN = "gpt-5.6-luna"              # $0.20 / $0.02 cached / $1.20 per 1M
-BRAIN_HEAVY = "gpt-5.6-terra"       # $2.00 / $0.20 cached / $12.00 per 1M
-REALTIME = "gpt-realtime-mini"      # the phone and desk voice; 0.76s to first word
-VISION = "gpt-5.6-luna"
+import os
+
+# EVERY ID IS ENV-OVERRIDABLE, DEFAULTS BELOW. The owner runs gpt-6.1-terra as
+# the intelligent brain and gpt-4o-mini as the eyes; a model rename is then a
+# line in .env, never a code edit (and never a redeploy). The defaults are what
+# he asked for; JARVIS_BRAIN / JARVIS_BRAIN_HEAVY / JARVIS_VISION override them.
+#
+# "Balanced" dial (his choice): trivial turns stay on the cheap fast model,
+# real work runs on the strong one with reasoning bought. See pick().
+BRAIN = os.environ.get("JARVIS_BRAIN") or "gpt-5.6-luna"        # cheap + fast
+BRAIN_HEAVY = os.environ.get("JARVIS_BRAIN_HEAVY") or "gpt-6.1-terra"  # the real brain
+REALTIME = os.environ.get("JARVIS_REALTIME") or "gpt-realtime-mini"   # voice
+VISION = os.environ.get("JARVIS_VISION") or "gpt-4o-mini"      # the eyes
 
 MAX_OUTPUT_TOKENS = 4000
-DAILY_CAP_USD = 5.0
+DAILY_CAP_USD = float(os.environ.get("JARVIS_DAILY_CAP_USD") or 8.0)
 
+# Keyed by LITERAL id, not by the variables above, so an env override cannot
+# empty the table and silently zero out cost logging. A model missing here bills
+# as 0.0 (usd() fails safe) - add its row when you add the model.
+# The gpt-6.1-terra row is a PLACEHOLDER: verify against the pricing page, since
+# GET /v1/models returns ids but no rates (see AGENTS.md deviations).
 PRICING = {
-    BRAIN:       {"in": 0.20, "cached": 0.02, "out": 1.20},
-    BRAIN_HEAVY: {"in": 2.00, "cached": 0.20, "out": 12.00},
-    REALTIME:    {"in": 0.60, "cached": 0.06, "out": 2.40},
+    "gpt-5.6-luna":      {"in": 0.20, "cached": 0.02, "out": 1.20},
+    "gpt-5.6-terra":     {"in": 2.00, "cached": 0.20, "out": 12.00},
+    "gpt-6.1-terra":     {"in": 2.50, "cached": 0.25, "out": 15.00},  # VERIFY
+    "gpt-4o-mini":       {"in": 0.15, "cached": 0.075, "out": 0.60},
+    "gpt-realtime-mini": {"in": 0.60, "cached": 0.06, "out": 2.40},
 }
 
 # Work that needs judgement rather than execution. Measured consequence of

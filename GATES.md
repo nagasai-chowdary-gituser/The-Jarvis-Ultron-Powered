@@ -391,3 +391,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t69_queue_strategies.py
   EXPECT: QUEUE-STRATEGIES-OK
   EVIDENCE: automatic-evidence=v1; definition-sha256=c2fcfbbbb83a6be6be169b79ba75886d70b4325e6ea8eaa061fb3d74975f8ca3; exit=0; EXPECT=matched; output-sha256=458436bb3e476994887b348b359ef43fe81e07f2e23fd0e510a548ddfb70bc5e; output-bytes=544; shell=C:\Windows\System32\cmd.exe; cwd=C:\Users\asus\Desktop\ultron; path=56d288f5bb34/48 entries
+
+- [x] G70: The delete-guard is real - run_python refuses every deletion route before it runs
+  CHECK: .venv\Scripts\python.exe tests\behavior\t70_preflight.py
+  EXPECT: PREFLIGHT_OK
+  EVIDENCE: pending

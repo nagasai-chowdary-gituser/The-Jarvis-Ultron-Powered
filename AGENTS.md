@@ -611,3 +611,73 @@ Instead, instruct the model in its session prompt to say what it is about to do
 - Real keys live in `.env` only — never in code, never in chat, never in logs.
 - If an approach here seems wrong, say so **before** building it.
 - If dispatch logic gets written twice, stop and extract the shared part.
+
+---
+
+## 14. The final-boss upgrade — from reactive executor to deliberate agent
+
+The owner's standing complaint was that Jarvis "does a little work only" — it
+took an instruction, called a tool, and stopped, like a relay for an API reply
+rather than an agent acting on his behalf. This change set makes it think,
+choose, look, and verify. It **augments** the honesty/budget/safety/memory
+foundation; none of that was rewritten.
+
+### 14.1 The delete-guard is now REAL (it was documented but absent)
+
+§4.3a claimed "13/13 delete routes refused", but the code that refused them did
+not exist in `safety.py` — `run_python`'s only content check was `money_check()`.
+A generated `shutil.rmtree` would have run with the owner's full rights. That is
+exactly the "guarantee believed but absent is worse than none" §4.2 warns about,
+and it was true of the headline safety rule. **`safety.preflight()` now exists**:
+an AST scan (not a substring grep, so `getattr(os,"remov"+"e")` and `exec(...)`
+cannot hide from it) returning `Verdict.REFUSED | FLAGGED | CLEAN`. `run_python`
+calls it before executing and **refuses** — no override, no approval path —
+deletion by every route, dynamic code execution, and credential-store reads.
+Moves/renames stay allowed (reversible). Flagged work (network writes, writes
+outside the workspace, shelling to powershell/cmd/reg) runs but is surfaced.
+Proven by `tests/behavior/t70_preflight.py`, which also writes a real file and
+confirms `os`-level deletion leaves it untouched.
+
+### 14.2 The eyes are back — `lib/vision.py`
+
+The screen-vision loop had been deleted (see `requirements.txt`). `see_screen()`
+and `list_windows()` restore it, using **PrintWindow + PW_RENDERFULLCONTENT**
+(§6.1), with the capture `source` reported so a fallback is never passed off as
+the window asked for. Vision = `gpt-4o-mini`. The system prompt now carries a
+**LOOK, DON'T ASK** rule, and the loop uses sight to verify its own work.
+
+### 14.3 Deliberation — plan, strategy-by-weight, and a reflection gate
+
+`ROLE` was rewritten: **think first** (plan to a file, silently), **choose the
+approach to the weight of the job** (do routine work directly; hand important
+work to a stronger tool and review it), **look** at results, and **verify before
+claiming done**. A structural **reflection gate** (`_needs_verify`,
+`MAX_VERIFY_NUDGES = 1`) sends a real task back once, before it may report
+"done", to prove the result with evidence — the evaluator step that stops the
+premature "it's finished". Bounded by the cap and the budget; trivial turns and
+pure questions are never nudged.
+
+### 14.4 Delegate-and-review — `lib/delegate.py`
+
+`delegate.produce()` opens ChatGPT/Claude in the owner's signed-in Chrome, sends
+a prompt, waits, **looks at the result**, has a **separate** model judge it
+against the request, and if it falls short tells that same chat what to fix and
+goes again, up to `max_cycles`. The judging (the valuable part) is model-driven
+and selector-independent; the live-page steps are best-effort and report what
+they observed, so a changed DOM surfaces as a clear failure, not a false success.
+
+### 14.5 `lib/office.py`, and balanced/overridable models
+
+`make_pptx`/`make_docx` give the "do the simple deck yourself" path (python-pptx
+had been removed). `models.py` is now the **Balanced** dial the owner chose —
+`gpt-6.1-terra` as the real brain, cheap/fast for trivial turns, `gpt-4o-mini`
+eyes — and every id is env-overridable (`JARVIS_BRAIN`, `JARVIS_BRAIN_HEAVY`,
+`JARVIS_VISION`), so a model rename is a line in `.env`, not a code edit.
+
+### 14.6 What still needs the owner's machine
+
+The container this was built in is Linux with no display, no API key, and no
+browser, so three things are proven only by construction and need a live run on
+Windows to confirm: `delegate.produce()`'s live-page selectors, `see_screen`'s
+PrintWindow path, and the real model ids resolving on his key. The design fails
+safe at each (reports what it saw; falls back to full-screen; one-line id swap).

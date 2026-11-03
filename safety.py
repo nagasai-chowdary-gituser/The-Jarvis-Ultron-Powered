@@ -25,6 +25,7 @@ WHAT ELSE LIVES HERE
 """
 from __future__ import annotations
 
+import ast
 import os
 from dataclasses import dataclass, field
 from enum import Enum
@@ -236,6 +237,253 @@ def money_check(text: str) -> None:
         if word in t:
             raise Blocked(f"money action blocked: {word!r}",
                           "I do not do anything involving money or payments.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PREFLIGHT — the guard that makes "Jarvis never deletes" actually TRUE
+#
+# WHY THIS EXISTS. The owner's first rule is that Jarvis does not delete his
+# files. For a long time that rule was only WRITTEN DOWN - the contract claimed
+# "13/13 delete routes refused", but the code that refused them did not live in
+# this module. run_python's only content check was money_check(), so generated
+# code calling shutil dot rmtree, os dot remove, or a shell "del" ran with the
+# owner's full rights and took the files for good. A guarantee believed but
+# absent is worse than none, so here it is, in code, scanned before anything runs.
+#
+# Three verdicts, one hard line:
+#   REFUSED  never runs, no override, no PIN - deletion, dynamic code execution,
+#            and reads of credential stores. This is the owner's standing rule,
+#            and a prompt cannot reach it because a prompt is the thing that gets
+#            approved.
+#   FLAGGED  runs, but surfaced on the HUD and recorded - network writes, writing
+#            outside the workspace, shelling to powershell/cmd/reg. Observable,
+#            not forbidden: the owner asked for an agent that runs his machine.
+#   CLEAN    runs immediately, no friction. The common case, and it must stay so.
+#
+# It is an AST scan, not a substring grep, so getattr(os, "remov"+"e") and
+# exec("...") cannot walk around it by hiding a name from a text search. It is a
+# heuristic against the realistic failure - the agent misreading an instruction -
+# not a wall against an adversary already running code as the user (§4.3).
+#
+# Moves and renames are deliberately NOT refused: they are reversible, and "move
+# it to a holding folder instead" is the alternative a refusal offers, so taking
+# that away would leave nothing to suggest.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Verdict(str, Enum):
+    CLEAN = "clean"
+    FLAGGED = "flagged"
+    REFUSED = "refused"
+
+
+@dataclass
+class Preflight:
+    verdict: Verdict
+    reasons: list[str] = field(default_factory=list)
+    lines: list[int] = field(default_factory=list)
+
+    def __bool__(self) -> bool:
+        """Truthy unless refused, so `if preflight(code): run()` reads right."""
+        return self.verdict is not Verdict.REFUSED
+
+    @property
+    def refused(self) -> bool:
+        return self.verdict is Verdict.REFUSED
+
+    def as_dict(self) -> dict:
+        return {"verdict": self.verdict.value, "reasons": self.reasons,
+                "lines": self.lines}
+
+
+# Final attribute names that mean "destroy a file", on any object. unlink and
+# rmdir are delete-only; rmtree exists only on shutil. "remove" is handled apart
+# because list.remove is innocent and must not be caught.
+_DELETE_METHODS = {"unlink", "rmdir", "rmtree"}
+_DELETE_ROOTS = {"os", "shutil", "pathlib", "path"}
+_DANGER_NAMES = {"remove", "unlink", "rmdir", "rmtree", "system", "popen"}
+_DYNAMIC = {"eval", "exec", "compile", "__import__"}
+_SHELL_CALLS = {"os.system", "os.popen", "subprocess.run", "subprocess.call",
+                "subprocess.popen", "subprocess.check_output",
+                "subprocess.check_call", "subprocess.getoutput",
+                "subprocess.getstatusoutput"}
+_NET_ROOTS = {"requests", "httpx", "urllib", "aiohttp", "session", "http"}
+_NET_WRITE = {"post", "put", "patch", "delete"}
+_READ_FUNCS = {"open", "read", "read_text", "read_bytes", "read_csv"}
+_CRED_TOKENS = (".ssh", "id_rsa", ".aws", ".netrc", "cookies.sqlite",
+                "login data", "web data", "key4.db", "logins.json",
+                "credentials.json", ".pem", ".kdbx")
+_CONFIG_SHELLS = ("powershell", "cmd.exe", "cmd /c", "cmd/c", "reg ", "reg.exe",
+                  "reg add", "reg delete", "wmic", "netsh", "bcdedit",
+                  "sc config", "sc delete", "schtasks")
+
+
+def _dotted(node) -> str:
+    """Reconstruct a dotted name from an Attribute/Name chain."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    elif isinstance(node, ast.Call):
+        parts.append("()")           # e.g. __import__('os').remove
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _strings(node) -> list[str]:
+    """Every string literal inside a subtree - list and tuple args included."""
+    return [n.value for n in ast.walk(node)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+
+def _delete_token(s: str) -> bool:
+    """Does one shell argument carry a deletion command? Catches the bare token
+    'del' as a list element as well as 'del x' and 'rm -rf' as a whole string."""
+    t = (s or "").strip().lower()
+    if t in ("del", "erase", "rd", "rm"):
+        return True
+    return (t.startswith(("del ", "del.", "del/", "erase ", "rm ", "rmdir",
+                          "rd ", "rd/"))
+            or " del " in t or "rm -rf" in t or "rm -r " in t
+            or "remove-item" in t or "ri -path" in t or "del /" in t
+            or "rmdir /" in t)
+
+
+def _import_aliases(tree) -> dict:
+    """Map local names to their canonical dotted origin, so an alias cannot hide
+    a destructive call. `from shutil import rmtree as nuke` -> nuke=shutil.rmtree."""
+    aliases: dict[str, str] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and n.module:
+            for a in n.names:
+                aliases[a.asname or a.name] = f"{n.module}.{a.name}"
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                aliases[a.asname or a.name] = a.name
+    return aliases
+
+
+def preflight(code: str, workspace: Path | None = None) -> Preflight:
+    """Scan generated code before it runs. Never raises; returns a Preflight.
+
+    Relative paths resolve against the workspace this call is GIVEN, not the
+    ambient one - reading the global made a scratch write look like an escape."""
+    reasons: list[str] = []
+    lines: list[int] = []
+    flags: list[str] = []
+    try:
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return Preflight(Verdict.FLAGGED, ["code could not be parsed"], [])
+
+    aliases = _import_aliases(tree)
+
+    def refuse(reason: str, ln: int) -> None:
+        reasons.append(reason)
+        lines.append(ln)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        ln = getattr(node, "lineno", 0)
+        func = node.func
+
+        if isinstance(func, ast.Name):
+            name = func.id
+            if name in _DYNAMIC:
+                refuse(f"dynamic code execution: {name}() (line {ln})", ln)
+                continue
+            if name == "getattr" and len(node.args) >= 2:
+                a = node.args[1]
+                if (isinstance(a, ast.Constant) and isinstance(a.value, str)
+                        and a.value in _DANGER_NAMES):
+                    refuse(f"destructive getattr indirection: "
+                           f"getattr(..., {a.value!r}) (line {ln})", ln)
+                    continue
+            resolved = aliases.get(name, name)
+            rroot, rlast = resolved.split(".")[0], resolved.split(".")[-1]
+            if rlast in _DELETE_METHODS or (rroot in _DELETE_ROOTS
+                                            and rlast in _DANGER_NAMES):
+                refuse(f"deletion via imported name: {name} ({resolved}) "
+                       f"(line {ln})", ln)
+                continue
+            if resolved in _SHELL_CALLS or rroot == "subprocess" \
+                    or rlast in ("system", "popen"):
+                strs = _strings(node)
+                if any(_delete_token(s) for s in strs):
+                    refuse(f"shell deletion inside {name}() (line {ln})", ln)
+                    continue
+                if any(tok in " ".join(strs).lower() for tok in _CONFIG_SHELLS):
+                    flags.append(f"shelling to a system tool via {name}() "
+                                 f"(line {ln})")
+
+        if isinstance(func, ast.Attribute):
+            dotted = _dotted(func)
+            last = func.attr
+            root = dotted.split(".")[0]
+            root_canon = aliases.get(root, root).split(".")[0]
+
+            if last in _DELETE_METHODS:
+                refuse(f"deletion: {dotted}() (line {ln})", ln)
+                continue
+            if last == "remove" and root_canon in _DELETE_ROOTS:
+                refuse(f"deletion: {dotted}() (line {ln})", ln)
+                continue
+            if root_canon == "importlib":
+                refuse(f"dynamic import: {dotted}() (line {ln})", ln)
+                continue
+
+            is_shell = (dotted in _SHELL_CALLS or root_canon == "subprocess"
+                        or dotted in ("os.system", "os.popen"))
+            if is_shell:
+                strs = _strings(node)
+                if any(_delete_token(s) for s in strs):
+                    refuse(f"shell deletion inside {dotted}() (line {ln})", ln)
+                    continue
+                if any(tok in " ".join(strs).lower() for tok in _CONFIG_SHELLS):
+                    flags.append(f"shelling to a system tool via {dotted}() "
+                                 f"(line {ln})")
+
+            if last in _NET_WRITE and (root_canon in _NET_ROOTS
+                                       or "request" in dotted.lower()):
+                flags.append(f"network write: {dotted}() (line {ln})")
+
+            if last in _READ_FUNCS:
+                for s in _strings(node):
+                    if any(tok in s.lower() for tok in _CRED_TOKENS):
+                        refuse(f"reads a credential store: {s!r} (line {ln})", ln)
+                        break
+
+        if isinstance(func, ast.Name) and func.id in ("open", "file"):
+            for s in _strings(node):
+                if any(tok in s.lower() for tok in _CRED_TOKENS):
+                    refuse(f"reads a credential store: {s!r} (line {ln})", ln)
+                    break
+            ws = (workspace or WORKSPACE).resolve()
+            mode = ""
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                mode = str(node.args[1].value)
+            for kw in node.keywords:
+                if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                    mode = str(kw.value.value)
+            if any(m in mode for m in ("w", "a", "x")) and node.args:
+                p = node.args[0]
+                if isinstance(p, ast.Constant) and isinstance(p.value, str):
+                    try:
+                        pp = Path(p.value)
+                        full = (pp if pp.is_absolute() else ws / pp).resolve()
+                        if full != ws and ws not in full.parents:
+                            flags.append(f"writes outside the workspace: "
+                                         f"{p.value!r} (line {ln})")
+                    except Exception:
+                        pass
+
+    if reasons:
+        return Preflight(Verdict.REFUSED, reasons, lines)
+    if flags:
+        return Preflight(Verdict.FLAGGED, flags, [])
+    return Preflight(Verdict.CLEAN, [], [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
