@@ -1,34 +1,33 @@
 """
-eye.py — a little eye at the top of the screen that OPENS when Jarvis is looking.
+eye.py — a small, beautiful eye at the top of the screen that OPENS when Jarvis
+is looking at your screen.
 
 Privacy you can see. A screenshot carries whatever is on screen off the machine
 (§6.1), so when Jarvis uses its eyes the owner should KNOW, the moment it happens,
-on any window and any desktop - not find out from a log later. This is that tell:
-a small eye, always on top, centred at the top edge. It is OPEN (bright green)
-while vision.see_screen is reading the screen and CLOSED (a dim teal, sleeping
-eye - still clearly visible) the rest of the time.
+on any window and any desktop. This is that tell: a crafted eye (anti-aliased
+iris, catch-light and glow, rendered with Pillow - not crude canvas shapes), OPEN
+while vision.see_screen is reading the screen and CLOSED (a calm, glowing shut
+lid) the rest of the time.
 
 HOW THE TWO PROCESSES AGREE. vision.see_screen runs inside a run_python
-subprocess; this overlay is its own process. They cannot share memory, so they
-share a tiny flag FILE under the workspace: see_screen writes "open <time>" when
-it starts and "shut <time>" when it finishes, and this overlay polls it. The time
-is a safety net - a capture that crashes without writing "shut" still closes the
-eye after _FRESH_S, so a dead process can never leave the eye stuck open.
+subprocess; this overlay is its own process. They share a tiny flag FILE under the
+workspace: see_screen writes "open <time>"/"shut <time>", this overlay polls it,
+with a staleness backstop so a crashed capture cannot leave the eye stuck open.
 
 STAYING ON TOP OF THE HUD. The ULTRON HUD is a borderless full-screen window that
-also makes itself topmost, so this overlay re-asserts HWND_TOPMOST every tick via
-SetWindowPos (not just the tk attribute, which does not re-raise once set). That
-is what keeps the eye above the HUD rather than behind it.
+is itself topmost, so this overlay re-asserts HWND_TOPMOST every tick.
 
-WINDOWS AT RUNTIME, importable anywhere. tkinter and the Win32 calls are imported
-lazily inside run(), so the module (and the signal functions vision.py calls) load
-on any OS with no display. Startup and any crash are written to eye.log, because a
-process started with `start` that dies on launch otherwise vanishes with no trace.
+WINDOWS AT RUNTIME, importable anywhere. tkinter, Pillow's ImageTk and the Win32
+calls are imported lazily inside run(), so the module (and the signal functions
+vision.py calls) load on any OS with no display. Startup and any crash go to
+eye.log and stdout, so a window that dies on launch leaves a trace.
 
-    python eye.py          # show the eye (jarvis.bat starts it for you)
+    python eye.py          # the eye (jarvis.bat / main.py start it for you)
+    python eye.py --demo    # blink open/closed, to check it renders
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -39,13 +38,13 @@ import safety
 EYE_FILE = safety.WORKSPACE / ".jarvis_eye"
 LOG = safety.ROOT / "eye.log"
 _FRESH_S = 25.0
-W = H = 72                      # big enough to spot at a glance
+W = H = 66                      # slightly smaller than before; glow fades inside
 
 
 def _log(msg: str) -> None:
     line = f"{time.strftime('%H:%M:%S')} eye: {msg}"
     try:
-        print(line, flush=True)           # captured to eye.log when launched by main
+        print(line, flush=True)
     except Exception:
         pass
     try:
@@ -68,17 +67,14 @@ def _write(state: str) -> None:
 
 
 def look_start() -> None:
-    """Jarvis has begun reading the screen - open the eye."""
     _write("open")
 
 
 def look_stop() -> None:
-    """Jarvis has finished - close the eye."""
     _write("shut")
 
 
 def look_quit() -> None:
-    """Ask a running overlay to exit (e.g. on Jarvis shutdown)."""
     _write("quit")
 
 
@@ -91,7 +87,6 @@ def _read() -> tuple[str, float]:
 
 
 def is_looking() -> bool:
-    """True only while a FRESH 'open' mark stands - the eye's open/closed state."""
     state, ts = _read()
     return state == "open" and (time.time() - ts) < _FRESH_S
 
@@ -101,20 +96,121 @@ def _should_quit() -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# The overlay — Windows at runtime, lazy imports
+# The drawing — Pillow, supersampled for smooth edges
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _almond(cx, cy, hw, hh, scale=1.0, n=90):
+    pts = []
+    for i in range(n + 1):
+        k = -1 + 2 * i / n
+        pts.append((cx + k * hw, cy - hh * scale * math.cos(k * math.pi / 2) ** 0.85))
+    for i in range(n + 1):
+        k = 1 - 2 * i / n
+        pts.append((cx + k * hw, cy + hh * scale * math.cos(k * math.pi / 2) ** 0.85))
+    return pts
+
+
+def eye_image(looking: bool, px: int):
+    """A crafted eye as an RGBA image. Rendered at 5x and downscaled, so the edges
+    are smooth. The eye sits inside the frame with a margin, so its glow fades to
+    fully transparent before the window edge - no halo box on any wallpaper."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageChops
+    S = px * 5
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    cx, cy = S / 2, S / 2
+    hw, hh = S * 0.35, S * 0.235          # leaves room for the glow
+
+    if looking:
+        glow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        ImageDraw.Draw(glow).polygon(_almond(cx, cy, hw, hh, 1.16),
+                                     fill=(46, 255, 130, 80))
+        img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(S * 0.028)))
+
+        mask = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(mask).polygon(_almond(cx, cy, hw, hh, 1.0), fill=255)
+
+        interior = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        d = ImageDraw.Draw(interior)
+        d.rectangle([0, 0, S, S], fill=(5, 18, 14, 255))
+        ir = S * 0.205
+
+        def lerp(a, b, t):
+            return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+        edge, mid, inner = (4, 40, 30), (46, 196, 120), (10, 70, 56)
+        for r in range(int(ir), 0, -1):
+            t = r / ir
+            col = (lerp(mid, edge, (t - 0.62) / 0.38) if t > 0.62
+                   else lerp(inner, mid, t / 0.62))
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col + (255,))
+        fib = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        fd = ImageDraw.Draw(fib)
+        for a in range(0, 360, 4):
+            ra = math.radians(a)
+            fd.line([cx + ir * 0.45 * math.cos(ra), cy + ir * 0.45 * math.sin(ra),
+                     cx + ir * 0.9 * math.cos(ra), cy + ir * 0.9 * math.sin(ra)],
+                    fill=(180, 255, 210, 40), width=max(1, S // 360))
+        interior.alpha_composite(fib.filter(ImageFilter.GaussianBlur(S * 0.004)))
+        d.ellipse([cx - ir, cy - ir, cx + ir, cy + ir], outline=(3, 26, 20, 255),
+                  width=max(2, S // 90))
+        pr = ir * 0.42
+        d.ellipse([cx - pr, cy - pr, cx + pr, cy + pr], fill=(1, 4, 3, 255))
+        d.ellipse([cx - pr, cy - pr, cx + pr, cy + pr], outline=(60, 150, 110, 120),
+                  width=max(1, S // 240))
+        hl = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        hx, hy, hr = cx - ir * 0.36, cy - ir * 0.46, ir * 0.26
+        ImageDraw.Draw(hl).ellipse([hx - hr, hy - hr * 0.78, hx + hr, hy + hr * 0.78],
+                                   fill=(235, 255, 245, 210))
+        interior.alpha_composite(hl.filter(ImageFilter.GaussianBlur(S * 0.012)))
+        sp = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        sr = ir * 0.08
+        ImageDraw.Draw(sp).ellipse([cx + ir * 0.18 - sr, cy + ir * 0.18 - sr,
+                                    cx + ir * 0.18 + sr, cy + ir * 0.18 + sr],
+                                   fill=(255, 255, 255, 230))
+        interior.alpha_composite(sp.filter(ImageFilter.GaussianBlur(S * 0.004)))
+        interior.putalpha(ImageChops.multiply(interior.getchannel("A"), mask))
+        img.alpha_composite(interior)
+
+        lid = _almond(cx, cy, hw, hh, 1.0)
+        ol = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        ImageDraw.Draw(ol).line(lid + [lid[0]], fill=(130, 255, 170, 255),
+                                width=max(3, S // 85), joint="curve")
+        img.alpha_composite(ol.filter(ImageFilter.GaussianBlur(S * 0.004)))
+    else:
+        ghost = _almond(cx, cy, hw, hh, 1.0)
+        g = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        ImageDraw.Draw(g).line(ghost + [ghost[0]], fill=(40, 120, 110, 55),
+                               width=max(2, S // 150), joint="curve")
+        img.alpha_composite(g.filter(ImageFilter.GaussianBlur(S * 0.006)))
+        lid = [(cx + (-1 + 2 * i / 90) * hw * 0.98,
+                cy + hh * 0.36 * math.cos((-1 + 2 * i / 90) * math.pi / 2))
+               for i in range(91)]
+        glow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        ImageDraw.Draw(glow).line(lid, fill=(70, 205, 190, 120),
+                                  width=max(6, S // 60), joint="curve")
+        img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(S * 0.03)))
+        d = ImageDraw.Draw(img)
+        d.line(lid, fill=(150, 240, 225, 255), width=max(4, S // 85), joint="curve")
+        for k in (-0.5, -0.17, 0.17, 0.5):
+            x = cx + k * hw * 0.9
+            y = cy + hh * 0.36 * math.cos(k * math.pi / 2)
+            d.line([x, y, x + k * hw * 0.05, y + hh * 0.3],
+                   fill=(90, 190, 180, 220), width=max(2, S // 150))
+
+    return img.resize((px, px), Image.LANCZOS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The overlay
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _hwnd(root):
     import ctypes
     wid = root.winfo_id()
-    parent = ctypes.windll.user32.GetParent(wid)
-    return parent or wid
+    return ctypes.windll.user32.GetParent(wid) or wid
 
 
 def _click_through(root) -> None:
-    """Let the mouse pass straight through the eye, so an overlay at the top of
-    every window never eats a click. Win32 only; a no-op elsewhere. WS_EX_TOOLWINDOW
-    also keeps it out of Alt-Tab and the taskbar."""
     try:
         import ctypes
         hwnd = _hwnd(root)
@@ -125,68 +221,39 @@ def _click_through(root) -> None:
             hwnd, GWL_EXSTYLE,
             cur | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW)
     except Exception as e:
-        _log(f"click_through failed (not fatal): {e}")
+        _log(f"click_through not applied (not fatal): {e}")
 
 
 def _raise_topmost(root) -> None:
-    """Force the eye to the very top of the z-order WITHOUT stealing focus - this
-    is what keeps it above the HUD, which is itself topmost."""
     try:
         import ctypes
-        HWND_TOPMOST = -1
-        SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
-        ctypes.windll.user32.SetWindowPos(
-            _hwnd(root), HWND_TOPMOST, 0, 0, 0, 0,
-            SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+        SWP = 0x0001 | 0x0002 | 0x0010      # NOSIZE | NOMOVE | NOACTIVATE
+        ctypes.windll.user32.SetWindowPos(_hwnd(root), -1, 0, 0, 0, 0, SWP)
     except Exception:
         pass
 
 
-def _draw(canvas, looking: bool) -> None:
-    canvas.delete("all")
-    cx, cy = W // 2, H // 2
-    ew, eh = 30, 16                        # eye half-width, half-height
-    if looking:
-        # OPEN: a bright green eye, iris, pupil, glint, with a soft glow ring.
-        canvas.create_oval(cx - ew - 3, cy - eh - 3, cx + ew + 3, cy + eh + 3,
-                           outline="#0f3d0f", width=1)
-        canvas.create_oval(cx - ew, cy - eh, cx + ew, cy + eh,
-                           fill="#06160a", outline="#39ff14", width=3)
-        canvas.create_oval(cx - 9, cy - 9, cx + 9, cy + 9,
-                           fill="#28c828", outline="#7bff7b", width=1)
-        canvas.create_oval(cx - 4, cy - 4, cx + 4, cy + 4, fill="#021002")
-        canvas.create_oval(cx - 2, cy - 7, cx + 2, cy - 3, fill="#eaffea")
-    else:
-        # CLOSED: a calm, SLEEPING eye - clearly visible, so the owner always
-        # sees the tell is there, just dimmed and shut.
-        canvas.create_line(cx - ew, cy, cx - ew + 4, cy - 4,
-                           fill="#1d6f6f", width=2)       # inner corner
-        canvas.create_arc(cx - ew, cy - eh, cx + ew, cy + eh + 6,
-                          start=200, extent=140, style="arc",
-                          outline="#35b5b5", width=3)      # the shut lid
-        for dx in (-10, 0, 10):                            # a few lashes
-            canvas.create_line(cx + dx, cy + 7, cx + dx, cy + 11,
-                               fill="#1d6f6f", width=1)
+def _hex(c: str):
+    c = c.lstrip("#")
+    return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
 
 
 def run(demo: bool = False) -> int:
-    """Show the overlay. demo=True ignores the signal and blinks open/closed every
-    couple of seconds, so you can confirm it renders and is centred."""
+    _log(f"starting, pid {os.getpid()}, python {sys.executable}")
     try:
         import tkinter as tk
-    except Exception as e:
-        _log(f"tkinter unavailable, eye cannot show: {e}")
+        from PIL import Image, ImageTk
+    except Exception:
+        import traceback
+        _log("tkinter or Pillow unavailable, eye cannot show:\n"
+             + traceback.format_exc())
         return 1
 
-    _log(f"starting, pid {os.getpid()}, python {sys.executable}")
     try:
         root = tk.Tk()
         root.title("jarvis-eye")
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        # Try a frameless transparent window (clean eye, no box). If the platform
-        # does not support it, fall back to a small SOLID dark badge - less pretty,
-        # but guaranteed visible, which matters more than pretty when it is missing.
         transparent = ""
         try:
             root.attributes("-transparentcolor", "#010203")
@@ -195,17 +262,24 @@ def run(demo: bool = False) -> int:
             _log(f"transparent window unsupported, using a solid badge: {e}")
         bg = transparent or "#07120b"
         root.configure(bg=bg)
-
         sw = root.winfo_screenwidth()
         x = (sw - W) // 2
-        root.geometry(f"{W}x{H}+{x}+0")                    # top-middle, y=0
-
-        canvas = tk.Canvas(root, width=W, height=H, bg=bg, highlightthickness=0,
-                           bd=0)
+        root.geometry(f"{W}x{H}+{x}+0")
+        canvas = tk.Canvas(root, width=W, height=H, bg=bg, highlightthickness=0, bd=0)
         canvas.pack()
+
+        base = _hex(transparent or bg)
+        photos = {}
+        for state in (True, False):
+            flat = Image.new("RGB", (W, H), base)
+            eye = eye_image(state, W)
+            flat.paste(eye, (0, 0), eye)
+            photos[state] = ImageTk.PhotoImage(flat)
+        item = canvas.create_image(W // 2, H // 2, image=photos[False])
+
         root.update_idletasks()
         _click_through(root)
-        look_stop()                 # always start closed, never a stale "open"
+        look_stop()
         _log(f"UP at top-centre: x={x}, screen {sw}px, "
              f"mode={'transparent' if transparent else 'SOLID badge'}")
     except Exception:
@@ -220,11 +294,11 @@ def run(demo: bool = False) -> int:
             return
         try:
             looking = (int(time.time()) % 4 < 2) if demo else is_looking()
-            _draw(canvas, looking)
-            _raise_topmost(root)        # stay above the HUD every frame
+            canvas.itemconfig(item, image=photos[looking])
+            _raise_topmost(root)
         except Exception as e:
             _log(f"tick error (continuing): {e}")
-        root.after(160, tick)
+        root.after(180, tick)
 
     tick()
     try:
