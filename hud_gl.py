@@ -460,6 +460,14 @@ class HudGL:
                 if idx is None:
                     self._mic_open = not self._mic_open
                 else:
+                    # Actually tell main.py which mic to use (it was only set
+                    # locally before, so a pick did nothing).
+                    if idx >= 0:
+                        try:
+                            self.s.outbox.put_nowait({"type": "set_device",
+                                                      "index": idx})
+                        except Exception:
+                            pass
                     self.s.device_request = idx
                     self._mic_open = False
                 return
@@ -1194,6 +1202,11 @@ def _apply(s: HudState, ev: dict) -> None:
 
     elif kind == "state":
         s.state = ev.get("state", s.state)
+
+    elif kind == "devices":
+        # The mic list from main.py - what fills the INPUT DEVICE picker. Without
+        # this handler the picker never received anything and sat on "detecting...".
+        s.devices = ev.get("devices") or []
 
     elif kind == "heard":
         # Show WHERE it came from. Three channels reach the same Jarvis, and

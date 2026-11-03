@@ -88,25 +88,74 @@ def emit(event: dict) -> None:
         pass
 
 
+# ── audio input devices, for the HUD's mic picker ────────────────────────────
+# The picker existed but nothing ever fed it: no code listed the microphones, so
+# it sat on "detecting..." forever. These enumerate the real input devices and
+# let the HUD choose one; desk_voice opens whichever is selected.
+_selected_input: int | None = None
+
+
+def _input_devices() -> list[dict]:
+    """The usable microphones, the active one flagged. Returns a single
+    explanatory entry (not an empty list) on error, so the HUD shows WHY rather
+    than a silent 'detecting...'."""
+    try:
+        import sounddevice as sd
+        try:
+            default_in = sd.default.device[0]
+        except Exception:
+            default_in = None
+        picked = _selected_input if _selected_input is not None else default_in
+        out, seen = [], set()
+        for i, d in enumerate(sd.query_devices()):
+            if (d.get("max_input_channels") or 0) <= 0:
+                continue
+            name = (d.get("name") or f"device {i}").strip()
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append({"index": i, "name": name, "active": i == picked})
+        if out and not any(o["active"] for o in out):
+            out[0]["active"] = True
+        return out or [{"index": -1, "name": "no microphone found", "active": True}]
+    except ImportError:
+        return [{"index": -1, "name": "sounddevice not installed", "active": True}]
+    except Exception as e:
+        return [{"index": -1, "name": f"mic error: {type(e).__name__}", "active": True}]
+
+
 @app.websocket("/hud")
 async def hud_socket(ws: WebSocket) -> None:
+    global _selected_input
     await hub.join(ws)
     try:
         await ws.send_text(json.dumps({"type": "hello", "db": str(state.DB_PATH)}))
+        # Fill the mic picker the moment the HUD connects, so it never sits on
+        # "detecting...". Enumerated off the event loop - PortAudio can be slow.
+        await ws.send_text(json.dumps({
+            "type": "devices",
+            "devices": await asyncio.to_thread(_input_devices)}))
         while True:
             raw = await ws.receive_text()
-            # The HUD is a display client, with ONE exception: the desk chat
-            # sends {"type":"say","text":...}. It is treated exactly like a
-            # typed desk line - routed through the same brain, and its reply is
-            # broadcast back to every client (so the chat shows it) by emit().
+            # The HUD is a display client, with two exceptions it sends back: the
+            # desk chat ({"type":"say"}) and a mic pick ({"type":"set_device"}).
             try:
                 msg = json.loads(raw)
             except Exception:
                 continue
-            if msg.get("type") == "say":
+            kind = msg.get("type")
+            if kind == "say":
                 text = (msg.get("text") or "").strip()
                 if text:
                     asyncio.create_task(handle(text, Transport.DESK))
+            elif kind == "set_device":
+                try:
+                    _selected_input = int(msg.get("index"))
+                except (TypeError, ValueError):
+                    _selected_input = None
+                # Re-broadcast so every HUD shows the new active device.
+                emit({"type": "devices",
+                      "devices": await asyncio.to_thread(_input_devices)})
     except WebSocketDisconnect:
         pass
     finally:
@@ -545,10 +594,12 @@ async def desk_voice() -> None:
         except Exception:
             pass
 
+    # device=None means the system default; a HUD pick sets _selected_input.
+    mic = _selected_input if (_selected_input is not None and _selected_input >= 0) else None
     stream = sd.RawInputStream(samplerate=rate, channels=1, dtype="int16",
-                               blocksize=block, callback=on_mic)
+                               blocksize=block, callback=on_mic, device=mic)
     stream.start()
-    print(f"  [voice] desk microphone open ({rate} Hz) - just talk")
+    print(f"  [voice] desk microphone open ({rate} Hz, device={mic}) - just talk")
     try:
         while rs.alive:
             chunk = await q.get()
