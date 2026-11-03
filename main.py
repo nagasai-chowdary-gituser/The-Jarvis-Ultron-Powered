@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -734,7 +735,27 @@ async def run() -> None:
     await asyncio.gather(*runners)
 
 
+def _start_eye() -> None:
+    """Launch the eye overlay from here, so it starts whenever Jarvis does (not
+    only via jarvis.bat). Its stdout+stderr go to eye.log, so a crash on launch -
+    tkinter missing, anything - is VISIBLE there instead of vanishing with the
+    detached window. Best-effort: the eye is a nicety, never a reason main dies."""
+    if "--headless" in sys.argv:
+        return
+    try:
+        logf = open(ROOT / "eye.log", "w", encoding="utf-8")
+        logf.write(f"--- eye launched by main.py at "
+                   f"{__import__('time').strftime('%H:%M:%S')} ---\n")
+        logf.flush()
+        subprocess.Popen([sys.executable, "-u", str(ROOT / "eye.py")],
+                         stdout=logf, stderr=subprocess.STDOUT, cwd=str(ROOT))
+        print("  [eye] overlay launched - if you do not see it, open eye.log")
+    except Exception as e:
+        print(f"  [eye] could not launch: {type(e).__name__}: {e}")
+
+
 def main() -> int:
+    _start_eye()
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

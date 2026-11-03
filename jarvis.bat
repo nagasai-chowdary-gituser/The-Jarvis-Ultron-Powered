@@ -57,10 +57,8 @@ if errorlevel 1 (
     )
 )
 
-REM The eye: a small overlay at the top-middle that opens while Jarvis is looking
-REM at the screen. A display client like the HUD - closing it stops nothing.
-echo %* | find /i "--headless" >nul
-if errorlevel 1 start "jarvis eye" "%JARVIS_PY%" -u eye.py
+REM The eye overlay (top-middle, opens while Jarvis is looking) is launched by
+REM main.py so its startup is logged to eye.log - see _start_eye() there.
 
 REM main.py stays in THIS window, because the typed desk door reads from here.
 "%JARVIS_PY%" -u main.py %*

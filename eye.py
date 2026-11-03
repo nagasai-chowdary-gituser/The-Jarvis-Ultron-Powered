@@ -29,6 +29,7 @@ process started with `start` that dies on launch otherwise vanishes with no trac
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -38,13 +39,18 @@ import safety
 EYE_FILE = safety.WORKSPACE / ".jarvis_eye"
 LOG = safety.ROOT / "eye.log"
 _FRESH_S = 25.0
-W = H = 60                      # a touch bigger, so it is easy to see
+W = H = 72                      # big enough to spot at a glance
 
 
 def _log(msg: str) -> None:
+    line = f"{time.strftime('%H:%M:%S')} eye: {msg}"
+    try:
+        print(line, flush=True)           # captured to eye.log when launched by main
+    except Exception:
+        pass
     try:
         with LOG.open("a", encoding="utf-8") as f:
-            f.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+            f.write(line + "\n")
     except Exception:
         pass
 
@@ -139,7 +145,7 @@ def _raise_topmost(root) -> None:
 def _draw(canvas, looking: bool) -> None:
     canvas.delete("all")
     cx, cy = W // 2, H // 2
-    ew, eh = 24, 13                        # eye half-width, half-height
+    ew, eh = 30, 16                        # eye half-width, half-height
     if looking:
         # OPEN: a bright green eye, iris, pupil, glint, with a soft glow ring.
         canvas.create_oval(cx - ew - 3, cy - eh - 3, cx + ew + 3, cy + eh + 3,
@@ -172,21 +178,27 @@ def run(demo: bool = False) -> int:
         _log(f"tkinter unavailable, eye cannot show: {e}")
         return 1
 
+    _log(f"starting, pid {os.getpid()}, python {sys.executable}")
     try:
         root = tk.Tk()
         root.title("jarvis-eye")
         root.overrideredirect(True)
         root.attributes("-topmost", True)
-        transparent = "#010203"
+        # Try a frameless transparent window (clean eye, no box). If the platform
+        # does not support it, fall back to a small SOLID dark badge - less pretty,
+        # but guaranteed visible, which matters more than pretty when it is missing.
+        transparent = ""
         try:
-            root.attributes("-transparentcolor", transparent)
-        except Exception:
-            transparent = ""
-        bg = transparent or "#0a0a0f"
+            root.attributes("-transparentcolor", "#010203")
+            transparent = "#010203"
+        except Exception as e:
+            _log(f"transparent window unsupported, using a solid badge: {e}")
+        bg = transparent or "#07120b"
         root.configure(bg=bg)
 
         sw = root.winfo_screenwidth()
-        root.geometry(f"{W}x{H}+{(sw - W) // 2}+0")        # top-middle
+        x = (sw - W) // 2
+        root.geometry(f"{W}x{H}+{x}+0")                    # top-middle, y=0
 
         canvas = tk.Canvas(root, width=W, height=H, bg=bg, highlightthickness=0,
                            bd=0)
@@ -194,9 +206,11 @@ def run(demo: bool = False) -> int:
         root.update_idletasks()
         _click_through(root)
         look_stop()                 # always start closed, never a stale "open"
-        _log(f"eye up at top-centre, screen width {sw}")
-    except Exception as e:
-        _log(f"eye failed to build its window: {e}")
+        _log(f"UP at top-centre: x={x}, screen {sw}px, "
+             f"mode={'transparent' if transparent else 'SOLID badge'}")
+    except Exception:
+        import traceback
+        _log("FAILED to build the window:\n" + traceback.format_exc())
         return 1
 
     def tick():
