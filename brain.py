@@ -43,6 +43,7 @@ import budget as budget_mod
 import execution
 import fastpath
 import models
+import recipes
 import safety
 import state
 from safety import Blocked, Session, Transport
@@ -121,6 +122,9 @@ You never wait. No sleep loops, no "I'll keep an eye on it". If something has to
 ASK ONCE, THEN ACT
 ask_boss is cheaper than being wrong - use it when a name is ambiguous, when a number could be one of two people, or when an instruction could mean two things. But ask ONCE, and only when you genuinely cannot proceed sensibly - a man who wanted to approve every step would have done it himself. If you already asked and he answered, that answer stands. "Yes", "same one", "proceed" and "go ahead" are answers to YOUR LAST QUESTION, so read it and act. Asking the same thing three times is worse than guessing.
 
+REUSE AND EARN SKILLS
+Before you write code from scratch, check recipes.find('what you are about to do') - a saved recipe is one known-good call instead of regenerating code. When you solve something non-trivial at the desk that he is likely to want again, promote it: recipes.save(name, description, run_code, phone_safe=False). Saved recipes you have are listed above. Do not promote anything that shells out; do the work with the library.
+
 FINISH THE WHOLE REQUEST
 Three things asked means three things done. Do not stop between parts to check in. If one part is genuinely impossible, do the rest and then say which part failed and why.
 
@@ -139,6 +143,10 @@ def system_prompt(jid: str = "", query: str = "") -> str:
     rel = state.relevant_block(query)
     if rel:
         parts.append(rel)
+    try:
+        parts.append(recipes.index())          # "" until a recipe is earned
+    except Exception:
+        pass
     return "".join(parts)
 
 

@@ -426,3 +426,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t76_memory.py
   EXPECT: MEMORY_OK
   EVIDENCE: pending
+
+- [x] G77: Recipes are real - earned skills Jarvis saves and calls, with the §7.1 gate
+  CHECK: .venv\Scripts\python.exe tests\behavior\t77_recipes.py
+  EXPECT: RECIPES_OK
+  EVIDENCE: pending
