@@ -358,6 +358,16 @@ call, so the transport gate denies it on phone and Telegram.
 The system prompt carries an explicit **LOOK, DON'T ASK** rule: after opening
 anything, read the result rather than asking the user what they see.
 
+**The eye overlay — privacy you can see.** `eye.py` is a small always-on-top eye
+at the top-middle of the screen that is OPEN while `see_screen` is reading the
+screen and CLOSED otherwise, on any window and any desktop. A screenshot carries
+whatever is visible off the machine, so the owner should know the instant it
+happens, not from a log. The two processes agree through a flag file under the
+workspace (`see_screen` writes "open"/"shut", the overlay polls it, with a
+staleness backstop so a crashed capture cannot leave the eye stuck open). It is
+click-through (WS_EX_TRANSPARENT) so it never eats a click. `jarvis.bat` starts
+it; `main.py` closes it on shutdown. Gate t83.
+
 ---
 
 ## 7. Recipes

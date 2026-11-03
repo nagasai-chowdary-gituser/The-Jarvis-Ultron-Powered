@@ -195,11 +195,31 @@ def _encode(img) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _eye(fn: str) -> None:
+    """Open or close the on-screen eye overlay. Never raises - the eye is a tell
+    for the owner, it must never break a capture."""
+    try:
+        import eye
+        getattr(eye, fn)()
+    except Exception:
+        pass
+
+
 def see_screen(question: str, window: Optional[str] = None) -> dict:
     """Look at the screen (or one window) and answer ONE question about it.
 
     Returns {ok, answer, source, window}. Never raises - a failure is a dict the
-    model can act on, exactly like run_python."""
+    model can act on, exactly like run_python. The eye overlay is held OPEN for
+    the whole read and closed on every exit path, so the owner sees exactly when
+    Jarvis is looking at the screen."""
+    _eye("look_start")
+    try:
+        return _see_impl(question, window)
+    finally:
+        _eye("look_stop")
+
+
+def _see_impl(question: str, window: Optional[str] = None) -> dict:
     q = (question or "what is on the screen right now?").strip()
     try:
         img, source = _grab(window)

@@ -456,3 +456,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t82_greeting.py
   EXPECT: GREETING_OK
   EVIDENCE: pending
+
+- [x] G83: The eye overlay opens while Jarvis sees the screen and closes when it stops
+  CHECK: .venv\Scripts\python.exe tests\behavior\t83_eye.py
+  EXPECT: EYE_OK
+  EVIDENCE: pending

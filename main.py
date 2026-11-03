@@ -740,6 +740,13 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\nshutting down.")
     finally:
+        # Close the eye overlay so it does not linger on screen after Jarvis is
+        # gone. Best-effort; a hard kill is caught by the overlay's own staleness.
+        try:
+            import eye
+            eye.look_quit()
+        except Exception:
+            pass
         # Take the tunnel down with us. Left running, it becomes an orphaned
         # cloudflared plus a pid file naming it - and the NEXT start reads that
         # file, believes a tunnel is alive, and never makes one. That is how
