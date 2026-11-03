@@ -571,6 +571,18 @@ class Brain:
             return False
         return bud.deadline_s >= 300.0
 
+    def _record_outcome(self, request: str, verdict_value: str) -> None:
+        """Log how this real turn ended, for the self-evaluation harness. Never
+        raises - telemetry must not break a turn."""
+        try:
+            snap = self.budget.snapshot() if self.budget else {}
+            state.record_outcome(self.channel, request, verdict_value,
+                                 actions=snap.get("actions", 0),
+                                 progress=snap.get("progress", 0),
+                                 elapsed=snap.get("elapsed", 0.0))
+        except Exception as e:
+            state.record_error("brain.record_outcome", e)
+
     def run(self, text: str) -> str:
         """One user turn. Returns what to say. Never raises."""
         # THE FAST PATH. "Open Chrome" is not a reasoning problem, and a
@@ -621,6 +633,7 @@ class Brain:
                 self.metrics["ended"] = verdict.value
                 self._say({"type": "ended", "verdict": verdict.value,
                            **bud.snapshot()})
+                self._record_outcome(text, verdict.value)
                 _remember_turn(self.channel, "out", out)
                 return out
             bud.round_started()
@@ -664,6 +677,7 @@ class Brain:
                 self.metrics["ended"] = budget_mod.Verdict.COMPLETED.value
                 self._say({"type": "ended", "verdict": "completed",
                            **bud.snapshot()})
+                self._record_outcome(text, "completed")
                 _remember_turn(self.channel, "out", reply)
                 return reply or "[guess] Done."
 
@@ -706,6 +720,7 @@ class Brain:
                             self.evidence)
                 self.metrics.update(bud.snapshot())
                 self.metrics["ended"] = "asked"
+                self._record_outcome(text, "asked")
                 _remember_turn(self.channel, "out", asked)
                 return asked
 

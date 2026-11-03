@@ -103,6 +103,18 @@ CREATE TABLE IF NOT EXISTS memory (
     last_used REAL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory(kind);
+CREATE TABLE IF NOT EXISTS outcomes (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       REAL NOT NULL,
+    day      TEXT NOT NULL,
+    channel  TEXT,
+    request  TEXT,                    -- redacted, short - for reading failures back
+    verdict  TEXT NOT NULL,           -- completed | blocked | timeout | stuck | ...
+    actions  INTEGER DEFAULT 0,
+    progress INTEGER DEFAULT 0,
+    elapsed  REAL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_outcomes_day ON outcomes(day);
 CREATE TABLE IF NOT EXISTS spend (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     ts     REAL NOT NULL,
@@ -645,6 +657,89 @@ def extract_and_learn(text: str, db_path: Path | None = None) -> int | None:
     kind = "person" if (low.startswith("call me") or low.startswith("my ")) \
         else "preference"
     return learn(kind, t, db_path=db_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SELF-EVALUATION — a measured success rate, not a vibe
+#
+# The build measured its cost precisely and its RELIABILITY not at all, so asked
+# "how good are you", it could only guess - the exact invented number §1 forbids.
+# Every real turn now records how it ended, and success_summary reads it back, so
+# the number is counted from what actually happened. completed is a win; timeout/
+# stuck/runaway are failures; blocked/needs_auth are ANSWERS that needed someone
+# else (§5.1), counted apart rather than as failures; cancelled is neither.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WIN = {"completed"}
+_FAIL = {"timeout", "stuck", "runaway", "error"}
+_HANDOFF = {"blocked", "needs_auth"}
+
+
+def record_outcome(channel: str, request: str, verdict: str, actions: int = 0,
+                   progress: int = 0, elapsed: float = 0.0,
+                   db_path: Path | None = None) -> None:
+    """Note how one real turn ended. Never raises - telemetry must not break a
+    turn. Fastpath turns are deterministic and are not recorded here."""
+    try:
+        c = _conn(db_path)
+        try:
+            c.execute("INSERT INTO outcomes (ts, day, channel, request, verdict,"
+                      " actions, progress, elapsed) VALUES (?,?,?,?,?,?,?,?)",
+                      (time.time(), time.strftime("%Y-%m-%d"), str(channel)[:60],
+                       redact(str(request))[:200], str(verdict)[:20],
+                       int(actions or 0), int(progress or 0), float(elapsed or 0)))
+            c.commit()
+        finally:
+            c.close()
+    except Exception as e:
+        record_error("state.record_outcome", e)
+
+
+def success_summary(days: int = 7, db_path: Path | None = None) -> dict:
+    """Read the success rate back. Returns the numbers plus `spoken` (one line for
+    voice) and `report` (the breakdown), so a model relaying it passes the string
+    through instead of inventing a figure."""
+    since = time.time() - days * 86400
+    c = _conn(db_path)
+    try:
+        rows = c.execute("SELECT verdict, COUNT(*) n FROM outcomes WHERE ts>=? "
+                         "GROUP BY verdict", (since,)).fetchall()
+        recent = c.execute("SELECT request, verdict FROM outcomes WHERE ts>=? AND "
+                           "verdict IN ('timeout','stuck','runaway','error') "
+                           "ORDER BY ts DESC LIMIT 5", (since,)).fetchall()
+    finally:
+        c.close()
+    by = {r["verdict"]: r["n"] for r in rows}
+    wins = sum(by.get(v, 0) for v in _WIN)
+    fails = sum(by.get(v, 0) for v in _FAIL)
+    handoffs = sum(by.get(v, 0) for v in _HANDOFF)
+    total = sum(by.values())
+    denom = wins + fails
+    rate = (wins / denom) if denom else None
+
+    if total == 0:
+        spoken = "No tasks recorded yet, so I have no success rate to report."
+        report = spoken
+    else:
+        pct = f"{rate*100:.0f}%" if rate is not None else "n/a"
+        spoken = (f"Over the last {days} days I finished {wins} of {denom} real "
+                  f"tasks, {pct}" + (f", with {handoffs} that needed you"
+                                     if handoffs else "") + ".")
+        lines = [f"Self-evaluation - last {days} days",
+                 f"  success rate : {pct}  ({wins} completed of {denom} decidable)",
+                 f"  failures     : {fails}  (timeout/stuck/runaway/error)",
+                 f"  needed you   : {handoffs}  (blocked/needs auth - not failures)",
+                 f"  total turns  : {total}"]
+        if recent:
+            lines.append("  recent misses:")
+            lines += [f"    - [{r['verdict']}] {r['request']}" for r in recent]
+        report = "\n".join(lines)
+
+    return {"rate": rate, "completed": wins, "failures": fails,
+            "handoffs": handoffs, "total": total, "by_verdict": by,
+            "spoken": spoken, "report": report,
+            "recent_failures": [{"request": r["request"], "verdict": r["verdict"]}
+                                for r in recent]}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

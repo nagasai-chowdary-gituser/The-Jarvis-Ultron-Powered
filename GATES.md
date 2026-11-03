@@ -431,3 +431,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t77_recipes.py
   EXPECT: RECIPES_OK
   EVIDENCE: pending
+
+- [x] G78: Jarvis measures its own reliability - a counted success rate, not a guess
+  CHECK: .venv\Scripts\python.exe tests\behavior\t78_selfeval.py
+  EXPECT: SELFEVAL_OK
+  EVIDENCE: pending
