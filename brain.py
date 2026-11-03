@@ -364,7 +364,7 @@ def vet(reply: str, evidence: dict) -> str:
 # run_python
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_python(code: str, why: str = "") -> dict:
+def run_python(code: str, why: str = "", heal: bool = True) -> dict:
     """A fresh subprocess with lib/ importable and the workspace as cwd.
 
     Two content checks run BEFORE anything executes, and both return a dict
@@ -405,6 +405,20 @@ def run_python(code: str, why: str = "") -> dict:
                "exit_code": p.returncode}
         if p.returncode != 0:
             out["error"] = (p.stderr or "non-zero exit")[-400:]
+            # SELF-HEAL: the commonest recoverable failure is a missing library.
+            # Install it once and re-run the same code, so the agent acquires what
+            # it needs mid-task instead of handing the Boss a ModuleNotFoundError.
+            if heal:
+                try:
+                    import selfheal
+                    miss = selfheal.missing_module(p.stderr or "")
+                    if miss:
+                        fix = selfheal.ensure_module(miss)
+                        if fix.get("ok"):
+                            return run_python(code, why, heal=False)
+                        out["heal"] = f"could not install {miss}: {fix.get('error', '')}"
+                except Exception as e:
+                    out["heal_error"] = f"{type(e).__name__}: {e}"[:150]
         if pf.verdict is not safety.Verdict.CLEAN:
             # FLAGGED ran, but the owner (and the HUD) should see what it did.
             out["preflight"] = pf.as_dict()

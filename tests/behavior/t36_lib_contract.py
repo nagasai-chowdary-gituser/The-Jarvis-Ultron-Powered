@@ -17,7 +17,8 @@ h.need(len(calls) >= 20, f"only {len(calls)} calls documented; index too thin")
 # has to track LIB.md: adding tasks and verify to the index without adding them
 # here made the check look for `lib.tasks`, which does not exist. The gate
 # caught it, which is the point of checking the index against reality.
-TOP_LEVEL = {"state", "browser", "tasks", "verify"}
+TOP_LEVEL = {"state", "browser", "tasks", "verify", "proactive", "recipes",
+             "selfheal"}
 checked = 0
 for module_name, func in sorted(set(calls)):
     mod = (importlib.import_module(module_name) if module_name in TOP_LEVEL

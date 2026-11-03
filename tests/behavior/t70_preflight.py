@@ -32,6 +32,13 @@ refused = [
     'exec("import os; os.remove(y)")',
     'from subprocess import run; run(["cmd","/c","del","x"])',
     'open("/home/me/.ssh/id_rsa").read()',
+    # indirection the contract claims is refused - found UNGUARDED in a brutal
+    # audit and fixed, so these lock it in:
+    'import os; os.__dict__["remove"]("x")',
+    'import os; vars(os)["unlink"]("x")',
+    'globals()["eval"]("1+1")',
+    'getattr(__builtins__, "exec")("x=1")',
+    'import builtins; builtins.__dict__["eval"]("1")',
 ]
 for code in refused:
     pf = safety.preflight(code)

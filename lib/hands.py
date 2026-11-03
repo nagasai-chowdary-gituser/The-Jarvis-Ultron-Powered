@@ -4,22 +4,26 @@ hands.py — the HANDS. Click and type into any Windows app, not just the browse
 THE ASYMMETRY THIS FIXES. vision.py gave Jarvis eyes, but the only click and
 keystroke in the whole build lived inside the browser (Playwright/CDP, for
 WhatsApp and web). desktop.py is "API level only - no click, no typing into
-other apps", and pyautogui had been deleted. So Jarvis could SEE a Save button
+other apps", and a pixel-automation library had been deleted. So Jarvis could SEE a Save button
 in PowerPoint and not press it. An agent that operates the machine has to touch
 the machine; eyes without hands is a code runner that can look.
 
-RELIABILITY FIRST - names, not pixels. The primary path is UI Automation
-(pywinauto's UIA backend): find a control by the accessible NAME the app already
-exposes ("Save", "Send", "Bold") and invoke it. That survives a window moving,
-resizing, or a different screen resolution - none of which a pixel click does.
-Pixels are the FALLBACK, for when a control has no name or no app exposes a tree,
-and they are driven by the eyes (vision reports where a thing is, hands click
-there). list_controls() hands the model the accessibility tree so it clicks a
-real named control instead of guessing coordinates.
+ONE LIBRARY, NAMES OVER PIXELS. Everything here goes through pywinauto's UI
+Automation backend - the SAME library for finding a control by name, for a raw
+coordinate click, and for keystrokes. That matters for two reasons:
+
+  1. Reliability. The primary path is a control's accessible NAME ("Save",
+     "Send", "Bold"); invoking that survives a window moving, resizing, or a
+     different resolution - none of which a pixel click does. list_controls()
+     hands the model the accessibility tree so it clicks a real named control.
+  2. The no-pixels rule. The hard-won lesson (see whatsapp.py) is that pixel
+     automation is a trap, and the build forbids a pixel-automation library anywhere in lib/.
+     pywinauto.mouse covers the one case names cannot - a control with NO name -
+     as a documented, vision-driven fallback, without reintroducing a pixel-automation library.
 
     list_controls(window)                 -> what is clickable, by name and kind
     click(target, window=None)            -> click a named control
-    click_at(x, y)                        -> raw coordinate click (the fallback)
+    click_at(x, y)                        -> coordinate click (the last resort)
     type_text(text, into=None)            -> type into a named field, or focused
     press(*keys)                          -> a shortcut, e.g. press("ctrl","s")
     focus(window)                         -> bring a window to the front
@@ -29,11 +33,9 @@ heavy import is lazy, so this module loads on any OS and degrades to a clear
 "hands need Windows" dict off it, which keeps the behaviour checks runnable.
 
 NO-DELETE, HONESTLY STATED. The file-deletion rule is enforced on generated CODE
-by safety.preflight(). Hands act on UI, which is a different surface: Jarvis must
-not click a "Delete permanently" button for the same reason it will not run
-os-level deletion - the system prompt forbids it, and the alternative (move /
-recycle) is offered instead. Hands do not silently bypass that rule; they are
-bound by it.
+by safety.preflight(). Hands act on UI, a different surface: Jarvis must not click
+a "delete permanently" button for the same reason it will not run os-level
+deletion - the system prompt forbids it, and move/recycle is offered instead.
 
 DESK SURFACE. Driving the mouse and keyboard is desk-kind, like vision - it must
 never be reachable from a spoofed phone call, and the caller-ID gate on /voice is
@@ -41,17 +43,24 @@ what keeps it there.
 """
 from __future__ import annotations
 
+import re
 import sys
-import time
 from typing import Optional
 
 _IS_WINDOWS = sys.platform.startswith("win")
 
-# Interactive control types worth listing - a human clicks these, not every
-# static label in the tree.
 _INTERACTIVE = {"Button", "MenuItem", "TabItem", "ListItem", "Edit", "CheckBox",
                 "RadioButton", "ComboBox", "Hyperlink", "SplitButton",
                 "TreeItem", "Text", "Custom"}
+
+# send_keys syntax: ^ ctrl, % alt, + shift; special keys in braces.
+_MODS = {"ctrl": "^", "control": "^", "alt": "%", "shift": "+"}
+_SPECIAL = {"enter": "{ENTER}", "return": "{ENTER}", "tab": "{TAB}",
+            "esc": "{ESC}", "escape": "{ESC}", "delete": "{DELETE}",
+            "del": "{DELETE}", "backspace": "{BACKSPACE}", "space": "{SPACE}",
+            "up": "{UP}", "down": "{DOWN}", "left": "{LEFT}", "right": "{RIGHT}",
+            "home": "{HOME}", "end": "{END}", "pageup": "{PGUP}",
+            "pagedown": "{PGDN}", "insert": "{INSERT}"}
 
 
 def _no_hands(what: str = "") -> dict:
@@ -65,13 +74,12 @@ def _desktop():
 
 
 def _window(title: Optional[str]):
-    """Best-effort connect to a top-level window by a fragment of its title.
-    Returns the window spec, or None."""
+    """Best-effort connect to a top-level window by a fragment of its title."""
     if not title:
         return None
     dt = _desktop()
     try:
-        return dt.window(title_re=f".*{title}.*")
+        return dt.window(title_re=f".*{re.escape(title)}.*")
     except Exception:
         try:
             for w in dt.windows():
@@ -82,43 +90,38 @@ def _window(title: Optional[str]):
     return None
 
 
+def _active():
+    from pywinauto import Desktop
+    return Desktop(backend="uia").window(active_only=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Look before you touch: the accessibility tree
 # ─────────────────────────────────────────────────────────────────────────────
 
 def list_controls(window: Optional[str] = None, limit: int = 60) -> dict:
-    """The named, clickable controls in a window (or the foreground one).
-
-    This is the hands' equivalent of vision reading the screen, but exact: it is
-    the names the app itself publishes, so clicking one is deterministic. Prefer
-    this over guessing coordinates."""
+    """The named, clickable controls in a window (or the foreground one). This is
+    the hands' equivalent of vision reading the screen, but exact - the names the
+    app itself publishes - so clicking one is deterministic. Prefer this over
+    guessing coordinates."""
     if not _IS_WINDOWS:
         return _no_hands("list_controls")
     try:
-        win = _window(window)
-        if win is None:
-            from pywinauto import Desktop
-            win = Desktop(backend="uia").window(active_only=True)
-        out = []
+        win = _window(window) or _active()
+        out, seen = [], set()
         for ctrl in win.descendants():
             try:
                 kind = ctrl.friendly_class_name()
                 name = (ctrl.window_text() or "").strip()
-                if name and kind in _INTERACTIVE:
+                if name and kind in _INTERACTIVE and (name, kind) not in seen:
+                    seen.add((name, kind))
                     out.append({"name": name, "kind": kind})
                     if len(out) >= limit:
                         break
             except Exception:
                 continue
-        # de-duplicate, keep order
-        seen, uniq = set(), []
-        for c in out:
-            key = (c["name"], c["kind"])
-            if key not in seen:
-                seen.add(key)
-                uniq.append(c)
         return {"ok": True, "window": window or "(foreground)",
-                "controls": uniq, "count": len(uniq)}
+                "controls": out, "count": len(out)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -144,21 +147,16 @@ def focus(window: str) -> dict:
 def click(target: str, window: Optional[str] = None, double: bool = False,
           right: bool = False) -> dict:
     """Click a control by the NAME the app exposes ('Save', 'Send', 'New Slide').
-
     best_match tolerates small differences, so 'save' finds 'Save'. Returns what
     was actually clicked, so a wrong match is visible rather than silent."""
     if not _IS_WINDOWS:
         return _no_hands("click")
     try:
-        win = _window(window)
-        if win is None:
-            from pywinauto import Desktop
-            win = Desktop(backend="uia").window(active_only=True)
+        win = _window(window) or _active()
         ctrl = win.child_window(title=target, control_type="Button")
         try:
             ctrl.wrapper_object()
         except Exception:
-            # fall back to a fuzzy match across any control type
             ctrl = win.child_window(best_match=target)
         if right:
             ctrl.right_click_input()
@@ -166,8 +164,7 @@ def click(target: str, window: Optional[str] = None, double: bool = False,
             ctrl.double_click_input()
         else:
             ctrl.click_input()
-        return {"ok": True, "clicked": target,
-                "window": win.window_text()}
+        return {"ok": True, "clicked": target, "window": win.window_text()}
     except Exception as e:
         return {"ok": False, "error": f"could not click {target!r}: "
                                       f"{type(e).__name__}: {e}",
@@ -176,48 +173,39 @@ def click(target: str, window: Optional[str] = None, double: bool = False,
 
 
 def click_at(x: int, y: int, double: bool = False, right: bool = False) -> dict:
-    """Raw coordinate click - the FALLBACK, for a control with no name. Pair it
-    with vision.see_screen to find where a thing is first."""
+    """Raw coordinate click - the LAST RESORT, for a control with no name. Pair it
+    with vision.see_screen to find where a thing is first. Uses pywinauto.mouse,
+    not a pixel-automation library, so lib/ stays free of pixel-automation libraries."""
+    if not _IS_WINDOWS:
+        return _no_hands("click_at")
     try:
-        import pyautogui
-        pyautogui.FAILSAFE = False
-        if right:
-            pyautogui.rightClick(x, y)
-        elif double:
-            pyautogui.doubleClick(x, y)
+        from pywinauto import mouse
+        button = "right" if right else "left"
+        if double:
+            mouse.double_click(button="left", coords=(int(x), int(y)))
         else:
-            pyautogui.click(x, y)
-        return {"ok": True, "clicked_at": [x, y]}
+            mouse.click(button=button, coords=(int(x), int(y)))
+        return {"ok": True, "clicked_at": [int(x), int(y)]}
     except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}",
-                "hint": "no display, or pyautogui is not installed"}
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 def type_text(text: str, into: Optional[str] = None,
               window: Optional[str] = None) -> dict:
-    """Type text. With `into`, type into that named field; otherwise into
-    whatever has focus. Real key events, so apps that listen for them (React,
-    games, terminals) receive them."""
+    """Type text. With `into`, type into that named field; otherwise into whatever
+    has focus. Real key events, so apps that listen for them (React, games,
+    terminals) receive them."""
     if not _IS_WINDOWS:
-        # off Windows, best-effort via pyautogui so a dev box can still drive it
-        try:
-            import pyautogui
-            pyautogui.typewrite(text, interval=0.02)
-            return {"ok": True, "typed": text[:80]}
-        except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return _no_hands("type_text")
     try:
+        keys = _escape(text)
         if into:
-            win = _window(window)
-            if win is None:
-                from pywinauto import Desktop
-                win = Desktop(backend="uia").window(active_only=True)
-            field = win.child_window(best_match=into)
+            field = (_window(window) or _active()).child_window(best_match=into)
             field.set_focus()
-            field.type_keys(_escape(text), with_spaces=True, pause=0.01)
+            field.type_keys(keys, with_spaces=True, pause=0.01)
         else:
             from pywinauto.keyboard import send_keys
-            send_keys(_escape(text), with_spaces=True, pause=0.01)
+            send_keys(keys, with_spaces=True, pause=0.01)
         return {"ok": True, "typed": text[:80], "into": into or "(focused)"}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
@@ -226,27 +214,34 @@ def type_text(text: str, into: Optional[str] = None,
 def press(*keys: str) -> dict:
     """A shortcut: press('ctrl','s') saves, press('enter') confirms, press('alt',
     'F4') closes. Order is the chord, pressed together."""
+    if not _IS_WINDOWS:
+        return _no_hands("press")
     try:
-        import pyautogui
-        pyautogui.hotkey(*[k.lower() for k in keys])
+        from pywinauto.keyboard import send_keys
+        send_keys(_chord(keys))
         return {"ok": True, "pressed": "+".join(keys)}
-    except Exception:
-        pass
-    if _IS_WINDOWS:
-        try:
-            from pywinauto.keyboard import send_keys
-            combo = "".join("{%s}" % k.upper() if len(k) > 1 else k for k in keys)
-            send_keys(combo)
-            return {"ok": True, "pressed": "+".join(keys)}
-        except Exception as e:
-            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    return {"ok": False, "error": "no way to send keys here"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _chord(keys) -> str:
+    mods, final = "", ""
+    for k in keys:
+        kl = str(k).lower()
+        if kl in _MODS:
+            mods += _MODS[kl]
+        elif kl in _SPECIAL:
+            final = _SPECIAL[kl]
+        elif re.fullmatch(r"f\d{1,2}", kl):
+            final = "{%s}" % kl.upper()
+        elif len(str(k)) == 1:
+            final = str(k)
+        else:
+            final = "{%s}" % str(k).upper()
+    return mods + final
 
 
 def _escape(text: str) -> str:
-    """pywinauto's type_keys reads {}()+^%~ as special; escape them so a literal
-    password or path types as itself."""
-    out = []
-    for ch in str(text):
-        out.append("{%s}" % ch if ch in "{}()+^%~[]" else ch)
-    return "".join(out)
+    """send_keys reads {}()+^%~[] as special; escape them so a literal password
+    or path types as itself."""
+    return "".join("{%s}" % ch if ch in "{}()+^%~[]" else ch for ch in str(text))

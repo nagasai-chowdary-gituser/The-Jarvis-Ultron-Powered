@@ -441,3 +441,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t79_proactive.py
   EXPECT: PROACTIVE_OK
   EVIDENCE: pending
+
+- [x] G80: Self-heal - health check reports honestly, bounded module installer, run_python retries
+  CHECK: .venv\Scripts\python.exe tests\behavior\t80_selfheal.py
+  EXPECT: SELFHEAL_OK
+  EVIDENCE: pending

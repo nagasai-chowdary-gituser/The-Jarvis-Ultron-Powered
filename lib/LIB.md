@@ -143,6 +143,14 @@ proactive.sweep() -> [{key,text,critical}]  things worth flagging (read-only)
 Asked "anything I should know?", sweep and tell him. You NOTICE and PROPOSE;
 acting on a finding unprompted is his call, not yours.
 
+## selfheal — fix what is safe to fix
+```
+selfheal.health_check()      -> {ok, checks, summary}   are my parts working?
+selfheal.ensure_module(name) -> install a library I need
+```
+run_python already auto-installs a missing library and retries once. Asked "are
+you okay?", run health_check and answer from what it found.
+
 ## desktop — API level only. There is no click, no typing into other apps.
 ```
 desktop.open_app(name)            -> launch by name

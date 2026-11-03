@@ -42,9 +42,8 @@ pywin32==308; sys_platform == "win32"
 
 # The HANDS: lib/hands drives native apps. pywinauto finds controls by their
 # accessible NAME over UI Automation (reliable across moves/resolutions);
-# pyautogui is the coordinate fallback, paired with the eyes.
+# the coordinate fallback and keystrokes use pywinauto.mouse / .keyboard, so
 pywinauto==0.6.8; sys_platform == "win32"
-pyautogui==0.9.54
 
 # Deletion means the recycle bin, never os.remove. safety.trash() depends on it.
 send2trash==1.8.3

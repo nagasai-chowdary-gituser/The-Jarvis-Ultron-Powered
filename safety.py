@@ -302,6 +302,10 @@ _DELETE_METHODS = {"unlink", "rmdir", "rmtree"}
 _DELETE_ROOTS = {"os", "shutil", "pathlib", "path"}
 _DANGER_NAMES = {"remove", "unlink", "rmdir", "rmtree", "system", "popen"}
 _DYNAMIC = {"eval", "exec", "compile", "__import__"}
+# Names that are a bypass when reached by a STRING rather than by syntax -
+# getattr(os, "remove"), os.__dict__["remove"], globals()["eval"]. The AST sees
+# the string, so these cannot hide the way a plain text search lets them.
+_INDIRECT_DANGER = _DANGER_NAMES | _DYNAMIC
 _SHELL_CALLS = {"os.system", "os.popen", "subprocess.run", "subprocess.call",
                 "subprocess.popen", "subprocess.check_output",
                 "subprocess.check_call", "subprocess.getoutput",
@@ -397,7 +401,7 @@ def preflight(code: str, workspace: Path | None = None) -> Preflight:
             if name == "getattr" and len(node.args) >= 2:
                 a = node.args[1]
                 if (isinstance(a, ast.Constant) and isinstance(a.value, str)
-                        and a.value in _DANGER_NAMES):
+                        and a.value in _INDIRECT_DANGER):
                     refuse(f"destructive getattr indirection: "
                            f"getattr(..., {a.value!r}) (line {ln})", ln)
                     continue
@@ -454,6 +458,17 @@ def preflight(code: str, workspace: Path | None = None) -> Preflight:
                     if any(tok in s.lower() for tok in _CRED_TOKENS):
                         refuse(f"reads a credential store: {s!r} (line {ln})", ln)
                         break
+
+        # X["remove"](...) / os.__dict__["eval"](...) / globals()["exec"](...):
+        # the same bypass by subscript that getattr does by name. The AST sees
+        # the string literal, so hiding it behind a dict lookup does not help.
+        if isinstance(func, ast.Subscript):
+            key = func.slice
+            if (isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    and key.value in _INDIRECT_DANGER):
+                refuse(f"destructive subscript indirection: "
+                       f"[{key.value!r}] (line {ln})", ln)
+                continue
 
         if isinstance(func, ast.Name) and func.id in ("open", "file"):
             for s in _strings(node):
