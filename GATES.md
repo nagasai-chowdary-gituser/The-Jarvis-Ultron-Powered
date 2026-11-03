@@ -396,3 +396,23 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t70_preflight.py
   EXPECT: PREFLIGHT_OK
   EVIDENCE: pending
+
+- [x] G71: The reflection gate makes a real task prove its result before "done"
+  CHECK: .venv\Scripts\python.exe tests\behavior\t71_reflection.py
+  EXPECT: REFLECTION_OK
+  EVIDENCE: pending
+
+- [x] G72: Delegation is reviewed by a separate judge, not relayed
+  CHECK: .venv\Scripts\python.exe tests\behavior\t72_delegate_judge.py
+  EXPECT: DELEGATE_JUDGE_OK
+  EVIDENCE: pending
+
+- [x] G73: Jarvis can build a deck or document itself - the light path exists
+  CHECK: .venv\Scripts\python.exe tests\behavior\t73_office.py
+  EXPECT: OFFICE_OK
+  EVIDENCE: pending
+
+- [x] G74: The eyes are present and fail safely without a display or key
+  CHECK: .venv\Scripts\python.exe tests\behavior\t74_vision.py
+  EXPECT: VISION_OK
+  EVIDENCE: pending
