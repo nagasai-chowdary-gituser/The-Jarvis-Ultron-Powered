@@ -383,7 +383,7 @@ async def stream(ws: WebSocket) -> None:
                 # .env and then ignored on every call, because this line had
                 # its own copy - so changing the greeting changed nothing.
                 greeting = (f"Boss, {reason.rstrip('.')}. What do you want me to do?"
-                            if reason else realtime.GREETING)
+                            if reason else realtime.greeting_for())
                 emit({"type": "call", "state": "connected"})
                 bring_up(greeting)
             elif ev == "media":

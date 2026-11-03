@@ -488,12 +488,14 @@ def _brief_text() -> str:
         lines.append("Held back overnight:")
         lines += [f"- {h}" for h in held[:10]]
 
-    if not lines:
-        return ""
-    spend = state.spend_today()
-    lines.append("")
-    lines.append(f"Yesterday cost ${spend:.2f}.")
-    return "Morning, Boss.\n\n" + "\n".join(lines)
+    # The greeting and yesterday's bill go out even on a quiet day - the owner
+    # asked to get them on the first open regardless. The greeting reads the real
+    # clock (Indian time), so a brief that fires in the evening says "evening".
+    import greet
+    if lines:
+        lines.append("")
+    lines.append(f"Yesterday's API cost: ${state.spend_yesterday():.2f}.")
+    return f"{greet.greeting()}\n\n" + "\n".join(lines)
 
 
 def maybe_brief() -> bool:

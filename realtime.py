@@ -64,17 +64,22 @@ VOICE = (os.environ.get("JARVIS_VOICE") or "ash").strip()
 
 # Spoken once when a session opens, before the user says anything. Silence on
 # startup gives you no way to tell a listening Jarvis from a broken one.
-GREETING = (os.environ.get("JARVIS_GREETING")
-            or "Welcome back, Boss. What do you want me to do?")
+# An env override only. Empty means "use the time-aware greeting" (greeting_for),
+# so the spoken hello matches the real hour - "Good evening, Boss" at night -
+# instead of a fixed string that is wrong most of the day.
+GREETING = (os.environ.get("JARVIS_GREETING") or "").strip()
 
 
 def greeting_for(transport=None) -> str:
-    """Say hello the moment the line opens.
+    """Say hello the moment the line opens, reading the real clock (Indian time).
 
     The PIN branch is gone with the PIN system. There is no locked state to
     greet any more: phone and Telegram can do everything except run code, and
     that is a transport boundary rather than something you unlock."""
-    return GREETING
+    if GREETING:
+        return GREETING
+    import greet
+    return f"{greet.greeting()} What do you want me to do?"
 
 
 # How long a pause ends your turn. See the note in connect() - 500ms splits

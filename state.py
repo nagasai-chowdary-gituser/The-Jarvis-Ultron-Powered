@@ -764,13 +764,27 @@ def record_spend(model: str, input_tokens: int = 0, cached_tokens: int = 0,
 
 
 def spend_today(db_path: Path | None = None) -> float:
+    return spend_on(time.strftime("%Y-%m-%d"), db_path=db_path)
+
+
+def spend_on(day: str, db_path: Path | None = None) -> float:
+    """Total USD spent on a given YYYY-MM-DD. `day` is in machine-local time,
+    matching how record_spend stores it."""
     c = _conn(db_path)
     try:
         r = c.execute("SELECT COALESCE(SUM(usd),0) t FROM spend WHERE day=?",
-                      (time.strftime("%Y-%m-%d"),)).fetchone()
+                      (day,)).fetchone()
     finally:
         c.close()
     return float(r["t"] or 0.0)
+
+
+def spend_yesterday(db_path: Path | None = None) -> float:
+    """Yesterday's total. This is what the morning greeting reports: on the first
+    open of a day today's spend is still zero, so today's figure says nothing -
+    yesterday's is the number that means something."""
+    y = time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400))
+    return spend_on(y, db_path=db_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
