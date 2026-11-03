@@ -416,3 +416,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t74_vision.py
   EXPECT: VISION_OK
   EVIDENCE: pending
+
+- [x] G75: The hands are present - native click/type via UI Automation, names over pixels
+  CHECK: .venv\Scripts\python.exe tests\behavior\t75_hands.py
+  EXPECT: HANDS_OK
+  EVIDENCE: pending

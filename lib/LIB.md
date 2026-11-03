@@ -112,6 +112,23 @@ pixels - unread counts, senders, subjects, error dialogs, whether a file opened.
 Cheaper first move: `list_windows()` - the title "(3) WhatsApp" already answers
 "how many unread".
 
+## hands — CLICK and TYPE into any app, not just the browser
+```
+hands.list_controls(window=None)  -> {controls:[{name,kind}]}  what is clickable
+hands.click(target, window=None)  -> click a control by its NAME ('Save','Send')
+hands.click_at(x, y)              -> raw coordinate click (the fallback)
+hands.type_text(text, into=None)  -> type into a named field, or the focused one
+hands.press('ctrl','s')           -> a shortcut chord
+hands.focus(window)               -> bring a window to the front
+```
+Names, not pixels. First `list_controls(window)` to see the exact control names
+the app publishes, then `click(that_name)` - it survives the window moving or the
+resolution changing, which a coordinate click does not. Use `click_at` only when
+a control has no name, and find the spot with `vision.see_screen` first. After
+you click or type, LOOK again (vision) to confirm it took. You are bound by the
+no-delete rule here too: do not click a "delete permanently" button - move or
+recycle instead.
+
 ## delegate — hand the HARD part to a stronger tool, then JUDGE it
 ```
 delegate.produce(task, prompt, target="chatgpt"|"claude",
