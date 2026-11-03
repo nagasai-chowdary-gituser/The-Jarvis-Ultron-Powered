@@ -66,6 +66,20 @@ EXEC_TIMEOUT_S = 60
 # it, read it, or LOOK at it. One nudge, never more: enough to force a grounded
 # self-check (the evaluator step that stops the premature "it's finished"), with
 # no risk of a verify-loop, because the budget and this cap both bound it.
+# THE THRASH GUARD. A loop of slightly-different calls (reading file after file,
+# each a bit different) is not caught by the exact-repeat loop detector, yet it is
+# exactly how a turn burns minutes - the "files specialist stuck in a loop" the
+# owner saw. When one tool is used this many times on a turn that still has not
+# finished, step the model back ONCE and point it at the shortest route. One nudge,
+# so it can never itself become a loop.
+THRASH_LIMIT = 6
+THRASH_NUDGE = (
+    "You have used {tool} {n} times on this and still have not finished - that is "
+    "thrashing, not progress. Stop and take the SHORTEST reliable route: for "
+    "'what app / project / file / window', the window TITLE already names it "
+    "(vision.list_windows) - you rarely need to read files at all. Answer from "
+    "what you already have, or change approach entirely; do not try another "
+    "variation of the same thing.")
 MAX_VERIFY_NUDGES = 1
 VERIFY_NUDGE = (
     "Before you report this done - verify it with EVIDENCE, not intention. Open "
@@ -98,6 +112,9 @@ Judge how much the result matters, and pick the method to match - this is your c
 
 LOOK, DON'T ASK
 You can see the screen. After you open, generate, or change anything, LOOK at the result - vision.see_screen("...") or read the file - and judge it yourself. Never end a turn with "let me know when it's loaded" or "tell me if that looks right": that is the old blindness talking. Opening a window and reading one are different acts and you can do both, so do both.
+
+TAKE THE SHORTEST RELIABLE ROUTE
+Before you write code, ask what the cheapest source of the answer is. For "what is open", "what app / project / file", "which window" - read the window TITLES first (vision.list_windows): a title bar already names the app, the project and the open file (VS Code shows "file - project - Visual Studio Code", a browser shows the page). You almost never need to scan the filesystem to learn something the title already says. Reach for a screenshot or for reading files only when the title is genuinely not enough. One good look beats ten file reads, and it does not get stuck.
 
 WHAT COUNTS AS TRUE, AND VERIFY BEFORE YOU CLAIM IT
 Say what a tool RETURNED, never what you intended. A message is sent when send() returned a message id; a file is written when write() returned its size; a deck is done when you OPENED it and saw the slides. Before you report a job finished, check it against your plan with real evidence - open it, read it, or see_screen it - not with a feeling that it probably worked. If the check fails, fix it and go again; you have room to iterate, that is expected, not a failure. If you did not read something, you do not know it. If a tool failed, say it failed and why - never substitute a plausible success.
@@ -493,6 +510,8 @@ class Brain:
         self.task_id: int | None = None
         self.budget = None
         self.verifications: int = 0        # reflection nudges spent this turn
+        self.tool_counts: dict = {}        # per-tool call count, for the thrash guard
+        self.thrash_nudged: bool = False
 
     def _say(self, ev: dict) -> None:
         try:
@@ -512,6 +531,7 @@ class Brain:
                     "spoken": b.spoken}
         self.session.calls += 1
         self.session.note(sig)
+        self.tool_counts[name] = self.tool_counts.get(name, 0) + 1
 
         # The HUD is the live audit log: the full source of every run_python.
         self._say({"type": "tool", "name": name,
@@ -584,6 +604,17 @@ class Brain:
         if bud is None or bud.actions < 1:
             return False
         return bud.deadline_s >= 300.0
+
+    def _thrash_tool(self) -> str | None:
+        """A tool used past THRASH_LIMIT on a turn that has not finished - the
+        soft loop the exact-repeat detector misses. Returns it once, then not
+        again (the nudge is one-shot), so the guard cannot loop on itself."""
+        if self.thrash_nudged:
+            return None
+        for tool, n in self.tool_counts.items():
+            if n >= THRASH_LIMIT:
+                return tool
+        return None
 
     def _record_outcome(self, request: str, verdict_value: str) -> None:
         """Log how this real turn ended, for the self-evaluation harness. Never
@@ -726,6 +757,14 @@ class Brain:
                     "type": "function_call_output", "call_id": c.id,
                     "output": json.dumps(c.result or {},
                                          default=str)[:TOOL_OUTPUT_LIMIT]})
+
+            thrash = self._thrash_tool()
+            if thrash:
+                self.thrash_nudged = True
+                self.convo.append({"role": "user", "content": THRASH_NUDGE.format(
+                    tool=thrash, n=self.tool_counts[thrash])})
+                self._say({"type": "thrash", "tool": thrash,
+                           "count": self.tool_counts[thrash]})
 
             if self.pending_question:
                 q = self.pending_question["question"]

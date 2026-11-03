@@ -461,3 +461,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t83_eye.py
   EXPECT: EYE_OK
   EVIDENCE: pending
+
+- [x] G84: A hammered tool gets one step-back nudge, not minutes of soft-looping
+  CHECK: .venv\Scripts\python.exe tests\behavior\t84_thrash.py
+  EXPECT: THRASH_OK
+  EVIDENCE: pending
