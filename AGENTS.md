@@ -720,3 +720,24 @@ read-only (disk filling, a failure streak); the worker surfaces findings via
 `tell_boss` (quiet hours + rate limits honoured), deduped so a thing is flagged
 once. `may_act()` gates autonomous action to an opt-in whitelist that is empty by
 default, so "bounded" is enforced in code. Gate t79.
+
+### 14.12 Self-heal and the benchmark — fix it, then measure it
+
+`selfheal.py`: run_python auto-installs a missing library (bounded, validated
+name) and retries once, so the agent acquires what it needs mid-task;
+`health_check()` reads back whether its own parts work. `python selfheal.py`.
+Gate t80.
+
+`benchmark.py`: "how good are you" is now a COUNT, not an estimate. A graded
+suite with grounded checks, two tiers - capability (the substrate: office, files,
+memory, safety incl. the indirection bypasses, recipes, self-heal, honesty - runs
+with no key, scored **100% / 20 tasks**, deterministic) and agent (the full
+brain.run() loop, scored by the same checks, needs a key + the real machine; this
+is the OSWorld-comparable number). It runs against an ISOLATED database, so it
+never pollutes the owner's real memory or reliability stats unless `--record` is
+passed. `python benchmark.py [--agent] [--record]`. Gate t81.
+
+**A real audit found and closed a delete-guard bypass** that §4.3a claimed was
+covered but was not: subscript and dynamic-name indirection (os.__dict__["remove"],
+globals()["eval"], getattr(x,"eval")) ran as CLEAN. `_INDIRECT_DANGER` +
+subscript detection now refuse all of them; re-audited 13/13, 0 false positives.

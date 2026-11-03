@@ -446,3 +446,8 @@ does not have.
   CHECK: .venv\Scripts\python.exe tests\behavior\t80_selfheal.py
   EXPECT: SELFHEAL_OK
   EVIDENCE: pending
+
+- [x] G81: The benchmark produces a real, deterministic score and pollutes no real data
+  CHECK: .venv\Scripts\python.exe tests\behavior\t81_benchmark.py
+  EXPECT: BENCHMARK_OK
+  EVIDENCE: pending
