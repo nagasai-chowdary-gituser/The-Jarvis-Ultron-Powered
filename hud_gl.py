@@ -480,23 +480,7 @@ class HudGL:
         self.ui.fill((0, 0, 0, 0))
 
         self._guides()
-        try:
-            self._energy()
-        except Exception:
-            # The ring must never take the whole HUD down, and must never just
-            # vanish. Log the real cause ONCE (so it can be fixed properly), then
-            # draw the simple ring so the eye stays visible.
-            if not getattr(self, "_energy_warned", False):
-                self._energy_warned = True
-                try:
-                    import sys
-                    import traceback
-                    print("[hud] ring draw failed, using fallback ring:",
-                          file=sys.stderr)
-                    traceback.print_exc()
-                except Exception:
-                    pass
-            self._fallback_ring()
+        self._draw_ring()
         self._chrome()
         self._left_rail()
         self._watch_panel()
@@ -619,6 +603,32 @@ class HudGL:
             log_top += lh
 
     # ── the ring ─────────────────────────────────────────────────────────────
+
+    def _draw_ring(self) -> None:
+        """Draw the energy ring, with safety nets so the eye is NEVER blank:
+        - JARVIS_HUD_SIMPLE=1 forces the simple ring - the escape hatch for a GPU
+          where the fancy orb's bloom/blit renders nothing even though the
+          particle compute is fine (a case a particle-count check cannot catch).
+          Opt-in, so a working orb is untouched.
+        - a thrown draw, or a projection that collapses, falls back automatically
+          (the latter handled inside _energy). Either way the HUD stays up."""
+        if os.environ.get("JARVIS_HUD_SIMPLE"):
+            self._fallback_ring()
+            return
+        try:
+            self._energy()
+        except Exception:
+            if not getattr(self, "_energy_warned", False):
+                self._energy_warned = True
+                try:
+                    import sys
+                    import traceback
+                    print("[hud] ring draw failed, using fallback ring:",
+                          file=sys.stderr)
+                    traceback.print_exc()
+                except Exception:
+                    pass
+            self._fallback_ring()
 
     def _fallback_ring(self) -> None:
         """A clean, simple ring for when the particle orb yields nothing - so the
