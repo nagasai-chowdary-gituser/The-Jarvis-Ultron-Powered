@@ -122,6 +122,18 @@ CREATE TABLE IF NOT EXISTS outreach (
     critical INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_outreach_day ON outreach(day, kind);
+CREATE TABLE IF NOT EXISTS procedures (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug       TEXT UNIQUE,            -- stable id from the task
+    title      TEXT NOT NULL,          -- "Make a PPT using ChatGPT"
+    trigger    TEXT,                   -- keywords to match a future request
+    steps      TEXT,                   -- JSON array of the proven steps
+    done_check TEXT,                   -- how it knows the task finished
+    uses       INTEGER DEFAULT 1,      -- times it has worked / been reinforced
+    fails      INTEGER DEFAULT 0,
+    updated_at REAL NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 _ready: set[str] = set()
@@ -397,6 +409,62 @@ def finish_job(job_id: int, result: str = "", status: str = "done",
         c.commit()
     finally:
         c.close()
+
+
+# ── learned procedures (the "training": what Jarvis has proven it can do) ──────
+
+def save_procedure(slug: str, title: str, trigger: str, steps: list,
+                   done_check: str = "", db_path: Path | None = None) -> None:
+    """Store or REINFORCE a proven procedure. Same slug again = the same skill
+    done again, so bump its use count and keep the latest working steps - that is
+    how it gets more reliable each time it works."""
+    now = time.time()
+    c = _conn(db_path)
+    try:
+        c.execute(
+            "INSERT INTO procedures (slug, title, trigger, steps, done_check,"
+            " uses, fails, updated_at, created_at)"
+            " VALUES (?,?,?,?,?,1,0,?,?)"
+            " ON CONFLICT(slug) DO UPDATE SET title=excluded.title,"
+            " trigger=excluded.trigger, steps=excluded.steps,"
+            " done_check=excluded.done_check, uses=procedures.uses+1,"
+            " updated_at=excluded.updated_at",
+            (slug.strip().lower()[:80], title[:160], trigger[:400],
+             json.dumps(steps)[:4000], (done_check or "")[:300], now, now))
+        c.commit()
+    finally:
+        c.close()
+
+
+def procedure_failed(slug: str, db_path: Path | None = None) -> None:
+    """A proven procedure did not work this time - count it, so a flaky one can
+    be spotted and relearned rather than trusted forever."""
+    c = _conn(db_path)
+    try:
+        c.execute("UPDATE procedures SET fails=fails+1, updated_at=? WHERE slug=?",
+                  (time.time(), slug.strip().lower()[:80]))
+        c.commit()
+    finally:
+        c.close()
+
+
+def procedures(db_path: Path | None = None) -> list[dict]:
+    """Every learned procedure, the most-used first. Steps are parsed back."""
+    c = _conn(db_path)
+    try:
+        rows = c.execute("SELECT * FROM procedures ORDER BY uses DESC, "
+                         "updated_at DESC").fetchall()
+    finally:
+        c.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["steps"] = json.loads(d["steps"] or "[]")
+        except Exception:
+            d["steps"] = []
+        out.append(d)
+    return out
 
 
 def hold_job(job_id: int, note: str = "paused on restart",

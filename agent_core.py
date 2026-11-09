@@ -48,6 +48,7 @@ import memory
 import models
 import playbooks
 import recipes
+import training
 import safety
 import state
 import verify
@@ -619,6 +620,17 @@ def _resume_tasks(args, ctx) -> dict:
         n += 1
     return {"ok": True, "resumed": n,
             "note": f"Resumed {n} task(s); the worker will pick them up."}
+
+
+def _learned(args, ctx) -> dict:
+    """What Jarvis has LEARNED to do from experience - its proven procedures,
+    strongest (most-used) first. Answer 'what can you do / what have you learned'
+    from this, never from imagination."""
+    items = training.known()[:25]
+    return {"ok": True, "count": len(items), "procedures": items,
+            "note": ("These are the procedures Jarvis learned by doing and can "
+                     "repeat. If empty, it has not yet learned a reusable skill "
+                     "- it still does tasks, it just has not crystallised one.")}
 
 
 def _message_boss(args, ctx) -> dict:
@@ -1259,6 +1271,13 @@ RESUME_TASKS = _t("resume_tasks",
     {"action": {"type": "string", "enum": ["resume", "drop"]}},
     ["action"], _resume_tasks)
 
+LEARNED = _t("learned_procedures",
+    "What Jarvis has LEARNED to do from experience - the proven procedures it "
+    "built by doing, with how many times each worked. Use for 'what can you do', "
+    "'what have you learned', 'what are you trained on'. Read-only; answer from "
+    "it, never invent skills.",
+    {}, [], _learned)
+
 MESSAGE_BOSS = _t("message_boss", "Send the Boss a Telegram message.",
     {"text": {"type": "string"}}, ["text"], _message_boss)
 
@@ -1565,7 +1584,7 @@ ROUTING - this is where turns go wrong, so get it right:
 - "IN MY <Nth/named> ACCOUNT / PROFILE" (e.g. "open ChatGPT in my 5th account", "do it in my secondary account"): this means his REAL Chrome, where he is already signed into everything. Use open_chrome_profile(which, url) - it opens that profile straight on the site, logged in. Then DRIVE IT ON SCREEN with the desktop specialist (read_window to see the controls, set_control/click_control to type and click, cursor+eyes if needed). Do NOT use ensure_browser/the browser specialist for a named account - that is a SEPARATE automation Chrome, signed out, and it lands on the profile picker. Get the account name right: "secondary"=2nd, do not drift to another number.
 - NEVER FAKE A BROWSER RESULT WITH CODE. If the task is to use a website/ChatGPT in his account and you cannot actually do it on screen, STOP and say so (ask him to check the window) - do NOT fall back to run_python to invent the content. Making a file FROM content you genuinely read is fine; manufacturing the content is not.
 - GO FAST: when parts of the task are INDEPENDENT (e.g. check the CPU and count files, or research one thing while reading another), call those specialists in the SAME step - they run at the same time instead of one after another.
-- DRIVE SITES CHEAPLY (time IS money here - every tab and every screenshot is another paid model call): open a site in ONE tab and NEVER re-open the same page - reuse the open tab. READ the page through its STRUCTURE, not screenshots - the browser specialist (role/text) for web pages, read_window (the accessibility tree) for app windows; set_control/click_control to type and click. Use see_screen/locate_on_screen (screenshots) ONLY when there is no structured handle (a game, a canvas, an image, an ad overlay), and then once, not repeatedly. Type a whole input at once, submit, wait for a clear DONE signal, then read the result. When a KNOWN-SITE playbook is in your context, follow it exactly - that is the fast, cheap, correct path.
+- DRIVE SITES CHEAPLY (time IS money here - every tab and every screenshot is another paid model call): open a site in ONE tab and NEVER re-open the same page - reuse the open tab. READ the page through its STRUCTURE, not screenshots - the browser specialist (role/text) for web pages, read_window (the accessibility tree) for app windows; set_control/click_control to type and click. Use see_screen/locate_on_screen (screenshots) ONLY when there is no structured handle (a game, a canvas, an image, an ad overlay), and then once, not repeatedly. Type a whole input at once, submit, wait for a clear DONE signal, then read the result. When a KNOWN-SITE playbook OR a PROVEN PROCEDURE (something you have done before and that worked) is in your context, follow it exactly - adapt a step only if it actually fails. That is the fast, cheap, correct path, and it is how you get more reliable over time.
 
 """ + _HONESTY + """
 
@@ -1759,8 +1778,8 @@ def build_team(force: bool = False) -> Agent:
                   (files, browser, desktop, research, comms, coder)]
     orch_tools += [PLAN, RUN_PYTHON, SAVE_SKILL, VERIFY_OUTCOME, MAKE_PPTX,
                    MAKE_DOCX, RECENT_ACTIVITY, API_USAGE, CALL_ME, REMEMBER,
-                   RECALL, SCHEDULE_JOB, DELETE_JOBS, RESUME_TASKS, ASK_BOSS,
-                   MESSAGE_BOSS,
+                   RECALL, SCHEDULE_JOB, DELETE_JOBS, RESUME_TASKS, LEARNED,
+                   ASK_BOSS, MESSAGE_BOSS,
                    READ_CALENDAR, READ_EMAIL, CONNECT_GOOGLE, SEE_SCREEN,
                    LOCATE_ON_SCREEN, CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY,
                    CURSOR_SCROLL, SCREEN_INFO]
@@ -1975,11 +1994,13 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # per-turn CONTEXT (a leading developer message), NOT glued onto the system
     # prompt - identical content for the model, but the system prompt and tool
     # schemas stay byte-identical so the prefix cache covers them.
+    proc = training.match(text)                          # a procedure it LEARNED
     context = (state.facts_block()
                + memory.preferences_block()             # how he likes things done
                + brain.rolling_summary(channel)         # recap of the older chat
                + memory.recall_block(text)
                + playbooks.block(text)                  # how a known site works
+               + training.render(proc)                  # how HE did it last time
                + _held_tasks_block()                    # tasks paused on restart
                + (state.as_context(jid) if jid else ""))
     import time as _time
@@ -2017,6 +2038,17 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     except Exception:
         trace = ""
     memory.capture_turn(text, reply, source=transport.value, trace=trace)
+    # TRAINING: learn-by-doing. A real multi-step operating success is distilled
+    # into a reusable PROCEDURE (training.learn gates to operating turns). If a
+    # procedure it was FOLLOWING did not get the work done, count that against it
+    # so a flaky one is relearned rather than trusted forever.
+    did_work = bool(ctx.evidence["results"])
+    training.learn(text, reply, trace, source=transport.value)
+    if proc and not did_work:
+        try:
+            state.procedure_failed(proc["slug"])
+        except Exception:
+            pass
     return reply
 
 
