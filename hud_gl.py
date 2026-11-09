@@ -480,7 +480,23 @@ class HudGL:
         self.ui.fill((0, 0, 0, 0))
 
         self._guides()
-        self._energy()
+        try:
+            self._energy()
+        except Exception:
+            # The ring must never take the whole HUD down, and must never just
+            # vanish. Log the real cause ONCE (so it can be fixed properly), then
+            # draw the simple ring so the eye stays visible.
+            if not getattr(self, "_energy_warned", False):
+                self._energy_warned = True
+                try:
+                    import sys
+                    import traceback
+                    print("[hud] ring draw failed, using fallback ring:",
+                          file=sys.stderr)
+                    traceback.print_exc()
+                except Exception:
+                    pass
+            self._fallback_ring()
         self._chrome()
         self._left_rail()
         self._watch_panel()
@@ -604,6 +620,31 @@ class HudGL:
 
     # ── the ring ─────────────────────────────────────────────────────────────
 
+    def _fallback_ring(self) -> None:
+        """A clean, simple ring for when the particle orb yields nothing - so the
+        eye is NEVER a black void. Pure pygame.draw (no numpy/surfarray/bloom), so
+        it survives whatever driver/library quirk blanked the fancy path on this
+        machine. Still animated and state-coloured, so it reads as alive."""
+        col = STATE_COLOR.get(self.s.state, TEAL_MID)
+        cx, cy, R = self.cx, self.cy, int(self.R)
+        lvl = max(0.0, min(1.0, self.s.level))
+        for rr, w, a in ((R, 3, 1.0), (int(R * 0.93), 1, 0.5),
+                         (int(R * 1.07), 1, 0.33)):
+            c = tuple(max(0, min(255, int(x * a))) for x in col)
+            try:
+                pygame.draw.circle(self.screen, c, (cx, cy), max(2, rr), max(1, w))
+            except Exception:
+                pass
+        pr = int(R * 0.5 + lvl * R * 0.18 + math.sin(self.t * 2.0) * 3)
+        try:
+            pygame.draw.circle(self.screen, col, (cx, cy), max(2, pr), 2)
+            a0 = (self.t * 1.4) % (2 * math.pi)
+            rect = pygame.Rect(cx - R, cy - R, 2 * R, 2 * R)
+            pygame.draw.arc(self.screen, (235, 245, 255), rect,
+                            a0, a0 + math.pi * 0.35, 3)
+        except Exception:
+            pass
+
     def _energy(self):
         """Particles and wordmark into one float accumulator, then bloom."""
         side = self.EB * 2
@@ -646,6 +687,13 @@ class HudGL:
         bright = self._w * (0.58 + 0.52 * nz)
 
         ok = (px >= 0) & (px < side) & (py >= 0) & (py < side)
+        # HEALTH CHECK: in a working ring, thousands of particles land inside the
+        # box. If almost none do, the projection is broken on this machine (R=0,
+        # a NaN, a driver/numpy quirk) and the fancy path would render a black
+        # void - so fall back to a clean simple ring instead of nothing.
+        if int(ok.sum()) < 400:
+            self._fallback_ring()
+            return
         idx = px[ok].astype(np.int32) * side + py[ok].astype(np.int32)
         acc = np.bincount(idx, weights=bright[ok],
                           minlength=side * side).astype(np.float32)

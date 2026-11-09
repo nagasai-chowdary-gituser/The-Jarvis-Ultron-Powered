@@ -46,6 +46,7 @@ import mcp_client
 import mcp_config
 import memory
 import models
+import playbooks
 import recipes
 import safety
 import state
@@ -1444,6 +1445,16 @@ READ_WINDOW = _t("read_window",
                "description": "part of the window title, e.g. 'Settings'"}},
     ["title"], _desk_call("read_window"))
 
+READ_TEXT = _t("read_text",
+    "Read the readable TEXT of a window or web page through its accessibility "
+    "layer - what a person would READ (a ChatGPT answer, an article, a dialog "
+    "message), not just the buttons. Use THIS to read a result CHEAPLY instead "
+    "of a screenshot: no vision call, just the text the app already exposes. "
+    "Bounded, so a long page is safe.",
+    {"title": {"type": "string",
+               "description": "part of the window title, e.g. 'ChatGPT'"}},
+    ["title"], _desk_call("read_text"))
+
 CLICK_CONTROL = _t("click_control",
     "Click a control in a native app by its accessibility NAME (as read_window "
     "shows it), never a coordinate. Works for buttons, menu items, list items.",
@@ -1554,6 +1565,7 @@ ROUTING - this is where turns go wrong, so get it right:
 - "IN MY <Nth/named> ACCOUNT / PROFILE" (e.g. "open ChatGPT in my 5th account", "do it in my secondary account"): this means his REAL Chrome, where he is already signed into everything. Use open_chrome_profile(which, url) - it opens that profile straight on the site, logged in. Then DRIVE IT ON SCREEN with the desktop specialist (read_window to see the controls, set_control/click_control to type and click, cursor+eyes if needed). Do NOT use ensure_browser/the browser specialist for a named account - that is a SEPARATE automation Chrome, signed out, and it lands on the profile picker. Get the account name right: "secondary"=2nd, do not drift to another number.
 - NEVER FAKE A BROWSER RESULT WITH CODE. If the task is to use a website/ChatGPT in his account and you cannot actually do it on screen, STOP and say so (ask him to check the window) - do NOT fall back to run_python to invent the content. Making a file FROM content you genuinely read is fine; manufacturing the content is not.
 - GO FAST: when parts of the task are INDEPENDENT (e.g. check the CPU and count files, or research one thing while reading another), call those specialists in the SAME step - they run at the same time instead of one after another.
+- DRIVE SITES CHEAPLY (time IS money here - every tab and every screenshot is another paid model call): open a site in ONE tab and NEVER re-open the same page - reuse the open tab. READ the page through its STRUCTURE, not screenshots - the browser specialist (role/text) for web pages, read_window (the accessibility tree) for app windows; set_control/click_control to type and click. Use see_screen/locate_on_screen (screenshots) ONLY when there is no structured handle (a game, a canvas, an image, an ad overlay), and then once, not repeatedly. Type a whole input at once, submit, wait for a clear DONE signal, then read the result. When a KNOWN-SITE playbook is in your context, follow it exactly - that is the fast, cheap, correct path.
 
 """ + _HONESTY + """
 
@@ -1593,12 +1605,14 @@ _ROLE_RULES = {
     "desktop specialist":
         "You control the machine and its NATIVE apps. open_app launches; media "
         "is the media keys; clipboard, processes, stats for the system. To "
-        "operate a native app (Settings, File Explorer, Notepad, a dialog): "
-        "call read_window ONCE to see its controls by name, then act on them BY "
-        "NAME with click_sequence (several buttons/menu items in one call) and "
-        "set_control (fill a field) - the accessibility tree, so never "
-        "screenshots, never OCR, never pixel coordinates, and never one click "
-        "per turn. For genuinely complex logic you may write one run_python "
+        "operate a native app (Settings, File Explorer, Notepad, a dialog) or a "
+        "web page in his real Chrome: call read_window ONCE to see its controls "
+        "by name, then act on them BY NAME with click_sequence (several buttons/"
+        "menu items in one call) and set_control (fill a field). To READ what a "
+        "page or window SAYS (a ChatGPT answer, an article, a message), call "
+        "read_text - it returns the text via the accessibility tree, CHEAP, no "
+        "screenshot. All accessibility, so never screenshots, never OCR, never "
+        "pixel coordinates, and never one click per turn. For genuinely complex logic you may write one run_python "
         "using the same lib.desktop helpers. WEB or chat apps (WhatsApp, Gmail, "
         "a website) are the "
         "comms or browser specialist's job, not yours - hand those back. "
@@ -1730,10 +1744,10 @@ def build_team(force: bool = False) -> Agent:
                   [ENSURE_BROWSER, SETUP_LOGIN, VERIFY_OUTCOME])
     desktop = sub("desktop", "desktop specialist", "desktop",
                   [OPEN_APP, OPEN_CHROME_PROFILE, MEDIA, PROCESSES, STATS,
-                   LIST_WINDOWS, READ_WINDOW, CLICK_CONTROL, CLICK_SEQUENCE,
-                   SET_CONTROL, SEE_SCREEN, SEE_IMAGE, LOCATE_ON_SCREEN,
-                   VERIFY_OUTCOME, CURSOR_CLICK, CURSOR_TYPE, CURSOR_KEY,
-                   CURSOR_SCROLL, SCREEN_INFO])
+                   LIST_WINDOWS, READ_WINDOW, READ_TEXT, CLICK_CONTROL,
+                   CLICK_SEQUENCE, SET_CONTROL, SEE_SCREEN, SEE_IMAGE,
+                   LOCATE_ON_SCREEN, VERIFY_OUTCOME, CURSOR_CLICK, CURSOR_TYPE,
+                   CURSOR_KEY, CURSOR_SCROLL, SCREEN_INFO])
     research = sub("research", "research specialist", "research",
                    [WEB_SEARCH, WEB_FETCH, READ_CALENDAR, READ_EMAIL])
     comms = sub("comms", "communications specialist", "comms",
@@ -1965,6 +1979,7 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
                + memory.preferences_block()             # how he likes things done
                + brain.rolling_summary(channel)         # recap of the older chat
                + memory.recall_block(text)
+               + playbooks.block(text)                  # how a known site works
                + _held_tasks_block()                    # tasks paused on restart
                + (state.as_context(jid) if jid else ""))
     import time as _time

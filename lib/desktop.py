@@ -397,6 +397,55 @@ def read_window(title: str, max_items: int = 50) -> dict:
     return {"ok": True, "window": win.Name[:80], "controls": items}
 
 
+def read_text(title: str, max_chars: int = 2000) -> dict:
+    """The readable TEXT of a window/page via the accessibility tree - what a
+    person would READ (a ChatGPT answer, an article, a dialog's message), not
+    just the buttons. This is how Jarvis reads a result CHEAPLY: no screenshot,
+    no vision call, just the text the app already exposes. Bounded to max_chars,
+    like every tool output, so a long page cannot blow up the bill."""
+    win = _find_window(title)
+    if win is None:
+        return {"ok": False, "error": f"no open window matches {title!r}",
+                "open": [w["title"] for w in windows()][:12]}
+    seen: set = set()
+    parts: list[str] = []
+    total = [0]
+
+    def walk(ctrl, depth: int) -> None:
+        if total[0] >= max_chars or depth > 14:
+            return
+        try:
+            kids = ctrl.GetChildren()
+        except Exception:
+            return
+        for c in kids:
+            if total[0] >= max_chars:
+                return
+            try:
+                ct = c.ControlTypeName.replace("Control", "")
+                txt = (c.Name or "").strip()
+                if ct in ("Edit", "Document", "ComboBox"):
+                    try:
+                        vp = c.GetValuePattern()
+                        if vp and vp.Value:
+                            txt = vp.Value.strip() or txt
+                    except Exception:
+                        pass
+                # Keep readable text lines; skip pure structure and repeats.
+                if txt and len(txt) > 1 and txt not in seen:
+                    seen.add(txt)
+                    parts.append(txt)
+                    total[0] += len(txt) + 1
+                walk(c, depth + 1)
+            except Exception:
+                continue
+
+    walk(win, 0)
+    text = "\n".join(parts)[:max_chars]
+    return {"ok": True, "window": win.Name[:80], "text": text,
+            "truncated": total[0] >= max_chars}
+
+
 def _find_control(win, name: str, kinds=None):
     """A control under `win` whose name matches `name` (exact first, then substring)."""
     want = (name or "").strip().lower()
@@ -521,6 +570,10 @@ _CHROME_PATHS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 ]
+# Debounce so the same profile+site is not re-opened into a new tab within a
+# task (the "it opened 5-8 tabs" bug). {(profile_dir, host): last_open_ts}.
+_LAST_OPEN: dict = {}
+_OPEN_DEBOUNCE_S = 120.0
 _ORDINAL_WORDS = {
     "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6,
     "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "eleventh": 11,
@@ -630,18 +683,40 @@ def open_chrome_profile(which: str, url: str = "") -> dict:
     url = (url or "").strip()
     if url and not url.lower().startswith(("http://", "https://")):
         url = "https://" + url
+
+    # ONE TAB, NOT EIGHT. Launching Chrome with a URL opens a NEW TAB every time,
+    # so an agent that calls this twice for the same site spawns a pile of tabs -
+    # the exact "it opened 5-8 ChatGPT tabs" bug, which is also 5-8x the time and
+    # the bill. Debounce: the same profile+site opened again within the window is
+    # a no-op that says "reuse the open tab", so a retry does not stack tabs.
+    host = ""
+    if url:
+        host = url.split("//", 1)[-1].split("/", 1)[0].lower()
+    key = (target["dir"], host)
+    now = time.time()
+    last = _LAST_OPEN.get(key, 0.0)
+    if host and (now - last) < _OPEN_DEBOUNCE_S:
+        return {"ok": True, "opened": target["name"], "email": target["email"],
+                "position": target["pos"], "dir": target["dir"],
+                "url": url or None, "reused": True,
+                "note": (f"{host} is ALREADY OPEN in your {target['name']} "
+                         "profile - reuse that tab, do NOT open another. Drive it "
+                         "on screen (read_window / click_control).")}
+
     cmd = [exe, f"--profile-directory={target['dir']}"]
     if url:
         cmd.append(url)
     try:
         subprocess.Popen(cmd, creationflags=NO_WINDOW)
+        _LAST_OPEN[key] = now
         return {"ok": True, "opened": target["name"], "email": target["email"],
                 "position": target["pos"], "dir": target["dir"],
-                "url": url or None,
+                "url": url or None, "reused": False,
                 "note": ("Opened your REAL signed-in profile" +
                          (f" at {url}" if url else "") +
-                         ". Drive it ON SCREEN now (read_window / click_control / "
-                         "cursor+eyes) - it cannot be remote-controlled, and "
-                         "never make up its content with code.")}
+                         " in ONE tab. Drive it ON SCREEN now (read_window / "
+                         "click_control / cursor+eyes) - it cannot be "
+                         "remote-controlled, and never make up its content with "
+                         "code. Do NOT open this site again - reuse this tab.")}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
