@@ -121,3 +121,22 @@ def test_set_control_web_box_falls_back_to_typing(monkeypatch):
     out = d.set_control("ChatGPT", "Message ChatGPT", "make a 4 slide deck on mars")
     assert out["ok"] and out["how"] == "typed"
     assert typed == ["make a 4 slide deck on mars"]                 # typed into the web box
+
+
+def test_eight_tabs_cannot_recur_even_if_the_model_misbehaves(monkeypatch):
+    """The 100-rupee failure was 5-8 ChatGPT tabs. Even if the model tries to
+    open ChatGPT many times in a task, the debounce guarantees ONE real launch -
+    this is structural, so the regression cannot come back through a model slip."""
+    import lib.desktop as d
+    monkeypatch.setattr(d, "chrome_profiles",
+                        lambda: [{"dir": "Default", "name": "Main",
+                                  "email": "x", "pos": 1}])
+    monkeypatch.setattr(d, "_match_profile", lambda w, p: p[0])
+    monkeypatch.setattr(d, "_chrome_exe", lambda: "chrome.exe")
+    opens = []
+    monkeypatch.setattr(d.subprocess, "Popen", lambda cmd, **k: opens.append(cmd))
+    d._LAST_OPEN.clear()
+    for _ in range(8):                               # a model that keeps re-opening
+        r = d.open_chrome_profile("main", "https://chatgpt.com")
+    assert len(opens) == 1                           # ONE tab, not eight
+    assert r["reused"] is True                       # every extra attempt reuses it
