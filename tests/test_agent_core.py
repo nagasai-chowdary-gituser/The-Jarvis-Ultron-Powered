@@ -408,6 +408,33 @@ def test_dispatch_writes_the_action_log(db):
     assert any(a["tool"] == "probe" and a["ok"] for a in state.recent_actions(5))
 
 
+def test_multistep_decision_recovers_and_finishes(db):
+    """A realistic decision FLOW, not a single dispatch: a tool fails, the loop
+    changes approach, a second tool succeeds, then it finishes - proving the
+    decision + recovery machinery end to end, with the real actions logged."""
+    calls = []
+
+    def flaky(args, ctx):
+        calls.append("flaky")
+        return {"ok": False, "error": "that path did not work"}
+
+    def good(args, ctx):
+        calls.append("good")
+        return {"ok": True, "text": "done value=42"}
+
+    tf = agent_core.Tool("flaky", "d", {"type": "object", "properties": {}}, flaky)
+    tg = agent_core.Tool("good", "d", {"type": "object", "properties": {}}, good)
+    agent = agent_core.Agent("t", "m", "low", "inst", [tf, tg], 40)
+    script = [_Resp([_FC("flaky", {}, "c1")]),      # tries one way, it fails
+              _Resp([_FC("good", {}, "c2")]),        # recovers with a different tool
+              _Resp([], "All set, boss.")]           # finishes
+    reply = agent.run("do the thing", _ctx(), FakeClient(script))
+    assert calls == ["flaky", "good"]                # changed approach after failure
+    assert "All set" in reply                         # and actually finished
+    logged = [a["tool"] for a in state.recent_actions(5)]
+    assert "flaky" in logged and "good" in logged     # the real flow was recorded
+
+
 def test_call_me_is_honest_when_it_cannot_call(db, monkeypatch):
     from lib import phone
 
