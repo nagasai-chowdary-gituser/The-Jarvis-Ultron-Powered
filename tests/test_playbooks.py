@@ -66,3 +66,58 @@ def test_open_chrome_profile_does_not_stack_tabs(monkeypatch):
 
     r3 = d.open_chrome_profile("main", "https://gmail.com")     # a different site
     assert r3["reused"] is False and len(opens) == 2            # that one does open
+
+
+# ── typing into a web field (the ChatGPT box) must work, not collapse ─────────
+
+class _VPok:
+    def SetValue(self, t):
+        self.v = t
+
+
+class _VPfail:
+    def SetValue(self, t):
+        raise Exception("contenteditable has no ValuePattern")
+
+
+def _fake_field(monkeypatch, value_pattern):
+    import lib.desktop as d
+
+    class Target:
+        def GetValuePattern(self):
+            return value_pattern
+
+        def SetFocus(self):
+            pass
+
+        def Click(self, **k):
+            pass
+
+    class Win:
+        Name = "ChatGPT"
+
+        def SetActive(self):
+            pass
+
+    monkeypatch.setattr(d, "_find_window", lambda t: Win())
+    monkeypatch.setattr(d, "_find_control", lambda w, c, kinds=None: Target())
+    typed = []
+    from lib import cursor
+    monkeypatch.setattr(cursor, "type_text", lambda t: typed.append(t))
+    return d, typed
+
+
+def test_set_control_native_field_uses_setvalue(monkeypatch):
+    d, typed = _fake_field(monkeypatch, _VPok())
+    out = d.set_control("Settings", "Name", "hello")
+    assert out["ok"] and out["how"] == "setvalue" and typed == []   # no typing needed
+
+
+def test_set_control_web_box_falls_back_to_typing(monkeypatch):
+    """ChatGPT's message box is a contenteditable with no ValuePattern, so
+    SetValue fails - it must FOCUS and TYPE instead of giving up (which would
+    collapse the cheap path to screenshots)."""
+    d, typed = _fake_field(monkeypatch, _VPfail())
+    out = d.set_control("ChatGPT", "Message ChatGPT", "make a 4 slide deck on mars")
+    assert out["ok"] and out["how"] == "typed"
+    assert typed == ["make a 4 slide deck on mars"]                 # typed into the web box

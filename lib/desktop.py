@@ -505,19 +505,48 @@ def click_control(title: str, control: str) -> dict:
 
 
 def set_control(title: str, control: str, text: str) -> dict:
-    """Put text into a field by name (SetValue - no keystroke races)."""
+    """Put text into a field by name.
+
+    Tries SetValue first - exact and raceless, for a NATIVE field. If that is not
+    supported, it FOCUSES the field and TYPES the text. That second path is what
+    makes the cheap accessibility route work ON THE WEB: a browser's message box
+    (ChatGPT's composer, a search box) is a contenteditable with NO ValuePattern,
+    so SetValue fails on it - and without the type fallback the whole flow would
+    collapse back to expensive screenshots. Typing is literal unicode (SendInput),
+    so any prompt text goes in verbatim."""
     win = _find_window(title)
     if win is None:
         return {"ok": False, "error": f"no open window matches {title!r}"}
-    target = _find_control(win, control, kinds={"Edit", "Document", "ComboBox"})
+    target = (_find_control(win, control, kinds={"Edit", "Document", "ComboBox"})
+              or _find_control(win, control))
     if target is None:
         return {"ok": False,
-                "error": f"no text field named {control!r} in {win.Name[:50]!r}"}
+                "error": f"no text field named {control!r} in {win.Name[:50]!r}",
+                "hint": "call read_window to see the real control names"}
+    # 1. SetValue - exact, no keystroke races - for a native field.
     try:
         target.GetValuePattern().SetValue(text)
-        return {"ok": True, "set": control, "value": text[:60]}
+        return {"ok": True, "set": control, "value": text[:60], "how": "setvalue"}
+    except Exception:
+        pass
+    # 2. Focus and TYPE - for a web contenteditable with no ValuePattern.
+    from lib import cursor
+    try:
+        try:
+            win.SetActive()
+        except Exception:
+            pass
+        try:
+            target.SetFocus()
+        except Exception:
+            target.Click(simulateMove=False)
+        cursor.type_text(text)
+        return {"ok": True, "set": control, "value": text[:60], "how": "typed"}
+    except cursor.UserActive as y:
+        return {"ok": False, "status": "yielded", "note": str(y)}
     except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "error": f"{type(e).__name__}: {e}",
+                "hint": "could not SetValue or type into this field"}
 
 
 def click_sequence(title: str, controls: list, delay: float = 0.12) -> dict:
