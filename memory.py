@@ -50,6 +50,16 @@ TOP_K = 6
 MIN_SIM = 0.18            # below this, a "match" is just noise
 DEDUP_SIM = 0.86         # an obvious paraphrase of a stored fact -> merge, not pile up
 
+# Recall ranks by RELEVANCE first, then nudges by how USEFUL a memory is: a
+# strong fact, one that matters recently, or one that keeps proving useful rises
+# over a weak near-tie - the way a sharp memory works. The nudges are small and
+# only reorder memories that already passed the MIN_SIM relevance gate, so they
+# never surface something irrelevant.
+_IMP_W = 0.03            # per importance point (0-5): strong fact > weak near-tie
+_REC_W = 0.03            # recency: a memory touched lately > a stale one
+_USE_W = 0.02            # usefulness: one recalled often and kept > an unused one
+RECENCY_HALFLIFE_S = 14 * 86400.0   # ~2 weeks: recency nudge halves over this
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,10 +210,11 @@ def _load_cache() -> dict:
     c = _conn()
     try:
         rows = c.execute(
-            "SELECT id, text, embedding, importance FROM memories").fetchall()
+            "SELECT id, text, embedding, importance, ts, last_used, uses"
+            " FROM memories").fetchall()
     finally:
         c.close()
-    ids, texts, imps, vecs = [], [], [], []
+    ids, texts, imps, vecs, recs, uses = [], [], [], [], [], []
     for r in rows:
         if r["embedding"] is None:
             continue
@@ -211,10 +222,14 @@ def _load_cache() -> dict:
         if v.shape[0] != EMBED_DIM:
             continue
         ids.append(r["id"]); texts.append(r["text"]); imps.append(r["importance"])
+        # when this memory last MATTERED (created or last recalled), for recency
+        recs.append(max(r["ts"] or 0.0, r["last_used"] or 0.0))
+        uses.append(r["uses"] or 0)
         vecs.append(_unit(v))
     mat = np.vstack(vecs) if vecs else np.zeros((0, EMBED_DIM), dtype=np.float32)
     _cache = {"ids": ids, "texts": texts, "imps": np.asarray(imps or [0.0]),
-              "mat": mat}
+              "recs": np.asarray(recs or [0.0], dtype=np.float64),
+              "uses": np.asarray(uses or [0.0], dtype=np.float32), "mat": mat}
     _cache_count = len(ids)
     return _cache
 
@@ -229,9 +244,17 @@ def _search_vec(vec: np.ndarray, k: int = TOP_K) -> list[dict]:
     if cache["mat"].shape[0] == 0:
         return []
     q = _unit(vec)
-    sims = cache["mat"] @ q                      # cosine (both unit)
-    # Nudge by importance so a strong fact outranks a weak near-tie.
-    score = sims + 0.03 * np.clip(cache["imps"][:len(sims)], 0, 5)
+    sims = cache["mat"] @ q                      # cosine (both unit) - RELEVANCE
+    n = len(sims)
+    # Rank by relevance, then nudge by how USEFUL each memory is: importance,
+    # recency, and how often it has proven useful. Small, so relevance leads and
+    # these only reorder near-ties (and recall() still gates on raw sim, so a
+    # nudge never promotes something irrelevant).
+    imp = np.clip(cache["imps"][:n], 0, 5)
+    age = np.maximum(0.0, time.time() - cache["recs"][:n])
+    rec_w = np.exp(-age / RECENCY_HALFLIFE_S)                 # (0, 1]
+    use_w = np.clip(np.log1p(np.clip(cache["uses"][:n], 0, None)) / 3.0, 0, 1)
+    score = sims + _IMP_W * imp + _REC_W * rec_w + _USE_W * use_w
     order = np.argsort(-score)[:k]
     out = []
     for i in order:

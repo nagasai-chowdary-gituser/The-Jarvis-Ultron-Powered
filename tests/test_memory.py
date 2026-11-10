@@ -55,6 +55,26 @@ def test_recall_ranks_by_shared_meaning(db):
     assert "Priya" in hits[0]["text"]          # the budget memory ranks first
 
 
+def test_recall_prefers_the_more_useful_memory_on_a_tie(db):
+    """Among EQUALLY relevant memories, the one that is important, recent, and has
+    proven useful ranks first - memory power, not just keyword similarity. The
+    MIN_SIM gate still means a nudge never surfaces an irrelevant memory."""
+    import time
+    v = np.ones(memory.EMBED_DIM, dtype=np.float32)
+    unit = v / np.linalg.norm(v)
+    now = time.time()
+    memory._cache = {
+        "ids": [1, 2],
+        "texts": ["important, recent, often useful", "stale, weak, unused"],
+        "imps": np.array([4.0, 0.5]),
+        "recs": np.array([now, now - 120 * 86400], dtype=np.float64),  # fresh vs 4mo old
+        "uses": np.array([6.0, 0.0], dtype=np.float32),
+        "mat": np.vstack([unit, unit]),                 # identical relevance
+    }
+    hits = memory._search_vec(unit, k=2)
+    assert hits[0]["id"] == 1 and hits[1]["id"] == 2    # the useful one wins the tie
+
+
 def test_unrelated_query_returns_little(db):
     memory.remember("the budget is approved by Priya")
     hits = memory.recall("photosynthesis in plants", k=3)

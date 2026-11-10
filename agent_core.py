@@ -1995,10 +1995,16 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # prompt - identical content for the model, but the system prompt and tool
     # schemas stay byte-identical so the prefix cache covers them.
     proc = training.match(text)                          # a procedure it LEARNED
+    # ADAPTIVE CONTEXT DEPTH: pull MORE relevant memory for a complex task and
+    # LESS for a one-liner - the right amount of background for the problem, not
+    # a fixed slice. k is a cap, and recall still only returns memories above the
+    # relevance gate, so a harder task simply gets more of what actually bears on
+    # it, while a trivial turn stays cheap.
+    recall_k = 10 if _is_complex(text) else (3 if _is_trivial(text) else memory.TOP_K)
     context = (state.facts_block()
                + memory.preferences_block()             # how he likes things done
                + brain.rolling_summary(channel)         # recap of the older chat
-               + memory.recall_block(text)
+               + memory.recall_block(text, k=recall_k)
                + playbooks.block(text)                  # how a known site works
                + training.render(proc)                  # how HE did it last time
                + _held_tasks_block()                    # tasks paused on restart
