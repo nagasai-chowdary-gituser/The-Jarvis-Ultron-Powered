@@ -408,6 +408,15 @@ def test_dispatch_writes_the_action_log(db):
     assert any(a["tool"] == "probe" and a["ok"] for a in state.recent_actions(5))
 
 
+def test_dedupe_reply_says_it_once():
+    """A repair pass can restate the answer; the owner must see it ONCE."""
+    f = agent_core._dedupe_reply
+    assert f("Done, boss.\nDone, boss.") == "Done, boss."         # repeated line
+    assert f("The deck is saved. The deck is saved.") == "The deck is saved."
+    assert f("All good.") == "All good."                          # single stays
+    assert f("First line.\nSecond line.") == "First line.\nSecond line."  # distinct kept
+
+
 def test_multistep_decision_recovers_and_finishes(db):
     """A realistic decision FLOW, not a single dispatch: a tool fails, the loop
     changes approach, a second tool succeeds, then it finishes - proving the

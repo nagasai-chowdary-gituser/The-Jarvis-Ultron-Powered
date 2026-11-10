@@ -1574,7 +1574,7 @@ You lead a small team of specialists and you decide who does what. Hand a job to
   comms    - WhatsApp and Telegram. It OPENS the app itself, finds the contact safely over the app's own protocol, sends, and verifies. When the Boss tells you to message someone, SEND IT - do not ask again. Only refuse to message people on your own, unprompted.
   coder    - read/write code and work with GitHub
 For anything a specialist does not cover, use run_python yourself. Prefer a specialist over writing code when one fits - it can see the machine between steps, which run_python cannot. If a saved skill (a tool marked "[saved skill]") already does what is asked, just call it. When run_python solves something non-trivial that the Boss is likely to want again, call save_skill to crystallize it, so next time it is one call.
-To make a PowerPoint/deck, use make_pptx; to make a Word document, use make_docx - each writes ONE saved file with no app window driven by COM. "Four slides" means four entries in the slides list, NOT four files or four windows. Never drive PowerPoint or Word by COM. To UPGRADE OR EDIT a deck/doc you already made (he says "make it", then "now add/change this"), call make_pptx/make_docx AGAIN with the SAME filename (or omit it to edit the last one) - it edits that SAME FILE in place and reopens it; NEVER open the app to edit, NEVER make a second file or a second window for an edit. If he says "call me before saving", build the deck, call_me, and when he gives changes, EDIT THE SAME FILE - do not start a new one.
+To make a PowerPoint/deck, use make_pptx; to make a Word document, use make_docx - each writes ONE saved file with no app window driven by COM. "Four slides" means four entries in the slides list, NOT four files or four windows. Never drive PowerPoint or Word by COM. To UPGRADE OR EDIT a deck/doc you already made (he says "make it", then "now add/change this"), call make_pptx/make_docx AGAIN with the SAME filename (or omit it to edit the last one) - it edits that SAME FILE in place and reopens it; NEVER open the app to edit, NEVER make a second file or a second window for an edit. If he says "call me before saving", build the deck, call_me, and when he gives changes, EDIT THE SAME FILE - do not start a new one. A deck/doc that make_pptx/make_docx returned ok for (a real path, the right slide count), optionally confirmed once with verify_outcome, is DONE - speak the path and STOP. Do NOT then take a screenshot (see_screen), open it, or run more code to "double-check" a file you already made - that is wasted time and money.
 
 ROUTING - this is where turns go wrong, so get it right:
 - Messaging ANYONE on WhatsApp or Telegram is ONE comms call, and ONLY comms. comms opens the app itself, so NEVER send "open whatsapp" to desktop as a separate step, and never try to drive a chat app any other way. "open whatsapp and message Kap Cut hi" = one comms call: "send the WhatsApp message 'hi' to Kap Cut".
@@ -1827,6 +1827,35 @@ def _strip_source_tag(text: str) -> str:
     return cleaned or (text or "").strip()
 
 
+def _dedupe_reply(text: str) -> str:
+    """Collapse an accidentally repeated reply into one. A self-check/repair pass
+    can restate the same answer, which showed up live as 'Done... Done...' - a
+    top-model reply says it once. Drops an immediately-repeated identical line,
+    and the whole-string-doubled case (X then the same X)."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    lines = [ln.strip() for ln in t.split("\n")]
+    out: list[str] = []
+    for ln in lines:
+        if ln and out and ln == out[-1]:
+            continue                       # same line twice in a row
+        out.append(ln)
+    t = "\n".join(out).strip()
+    # whole answer pasted twice back-to-back - only for a substantial message, so
+    # a short legitimate repetition ("go go go go") is never collapsed.
+    for sep in ("\n", " "):
+        parts = t.split(sep)
+        n = len(parts)
+        if n >= 2 and n % 2 == 0:
+            a, b = sep.join(parts[:n // 2]).strip(), sep.join(parts[n // 2:]).strip()
+            if a and a == b and len(a) >= 12:
+                return a
+    if len(t) % 2 == 0 and len(t) >= 24 and t[:len(t) // 2] == t[len(t) // 2:]:
+        return t[:len(t) // 2].strip()
+    return t
+
+
 def _is_trivial(text: str) -> bool:
     """A one-liner that needs no checking: the small budget tier. Sizing the
     gate off budget.for_request keeps 'what needs verifying' in one place."""
@@ -2029,6 +2058,7 @@ def run_turn(text: str, transport: Transport, *, jid: str = "", emit=None,
     # let the orchestrator finish it, then the answer stands. This is the piece
     # budget.py was always designed around.
     reply = _verify_and_repair(text, reply, team, ctx, history, context, emit)
+    reply = _dedupe_reply(reply)            # say it once, like a top model would
 
     emit({"type": "reply", "text": reply})
     brain._remember_turn(channel, "out", reply)

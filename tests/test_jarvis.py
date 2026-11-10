@@ -605,6 +605,9 @@ def test_search_says_so_when_both_backends_fail(monkeypatch):
     "open chrome", "open notepad", "what time is it", "whats the time",
     "what day is it", "cpu usage", "memory", "play", "pause", "next",
     "volume up", "what apps are installed", "whats running",
+    # real-world stats phrasings that used to take a 20s orchestrator round
+    "what is my cpu and memory usage right now", "system status",
+    "how much memory is free", "whats my disk space",
 ])
 def test_the_obvious_things_never_reach_a_model(phrase):
     """"Open Chrome" took five seconds, of which ~80ms was opening Chrome."""
@@ -619,6 +622,9 @@ def test_the_obvious_things_never_reach_a_model(phrase):
     "send a message to uma",                # who is uma?
     "open it",                              # what is "it"
     "why is my project failing",            # diagnosis
+    "why is my cpu so high",                # diagnosis, not a reading
+    "free up my memory",                    # an action, not a reading
+    "monitor my cpu every 5 minutes",       # schedules a watch
     "remind me to call mom",                # schedules work
     "open chrome then take a screenshot",
 ])

@@ -89,6 +89,38 @@ _STATS = re.compile(
     r"(?:cpu|ram|memory|disk|storage|system)\s*"
     r"(?:usage|stats|status|free|space|load)?\??$", re.I)
 
+# A plain system-reading, matched by meaning rather than an exact shape - so
+# "what is my cpu AND memory usage right now" (two stats, a trailing phrase, an
+# "and" that the complex-gate would otherwise reject) still gets the instant
+# answer instead of a 20-second orchestrator round. Deliberately NOT matched when
+# it is a DIAGNOSE/FIX ("why is my cpu high", "free up memory") - that is real
+# work for the brain.
+_STAT_WORDS = ("cpu", "ram", "memory", "disk", "storage", "system")
+_STAT_ASK = ("usage", "stats", "status", "free", "space", "load", "how much",
+             "right now", "currently", "performance", "utiliz", "utilis",
+             "consumption", "left", "available")
+_STAT_FILLER = {"my", "the", "and", "is", "are", "what", "whats", "what's",
+                "hows", "how", "show", "me", "right", "now", "of", "s", "&",
+                "tell", "check", "whats", "much"}
+_STAT_EXCLUDE = ("why", "fix", "reduce", "optimi", "optimis", "kill", "close",
+                 "high", "slow", "free up", "clean", "increase", "boost",
+                 "monitor", "watch", "every")
+
+
+def _is_stats(text: str) -> bool:
+    t = (text or "").lower().strip().rstrip("?.!")
+    words = t.split()
+    if not (1 <= len(words) <= 12):
+        return False
+    if not any(w in t for w in _STAT_WORDS):
+        return False
+    if any(b in t for b in _STAT_EXCLUDE):
+        return False
+    if any(a in t for a in _STAT_ASK):
+        return True
+    # or the whole thing is just stat words + filler ("my cpu and memory")
+    return all(w in _STAT_WORDS or w in _STAT_FILLER for w in words)
+
 _APPS = re.compile(r"^(?:what|which)\s+apps?\s+(?:are\s+)?"
                    r"(?:installed|available|do i have)\??$", re.I)
 
@@ -267,6 +299,10 @@ def match(text: str):
     t = (text or "").strip().rstrip(".!")
     if not t or len(t) > 80:
         return None
+    # A plain system reading answers instantly even with an "and" in it - checked
+    # BEFORE the complex-gate, which would otherwise bounce "cpu and memory".
+    if _is_stats(t):
+        return lambda: _do_stats("")
     if _COMPLEX.search(t):
         return None                       # more than one thing is being asked
 
