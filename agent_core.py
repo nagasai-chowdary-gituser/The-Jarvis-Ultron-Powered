@@ -137,6 +137,10 @@ class Ctx:
         self.channel = channel
         self.user_confirmed = user_confirmed
         self.evidence = {"job_ids": [], "results": [], "failures": []}
+        # Did this turn CHANGE anything (not just read)? A pure-read turn ("what
+        # is my cpu", "what have you learned") needs no self-check - verifying a
+        # read only adds latency - so this gates verify.
+        self.acted = False
         # Guards the session counters and evidence lists when several helpers
         # run in parallel - `calls += 1` is a read-modify-write, and a lost
         # increment would silently widen the runaway guard.
@@ -206,8 +210,9 @@ def guard(tool: Tool, args: dict, ctx: Ctx) -> dict | None:
 # URLs, different files). Browser tools are NOT here: there is one page, so two
 # concurrent reads of it would race. Writes are never here.
 _READ_ONLY_FUNCS = {"web_search", "web_fetch", "recall", "stats", "processes",
-                    "list_windows", "read_window", "list_apps",
-                    "recent_activity", "screen_info", "api_usage"}
+                    "list_windows", "read_window", "read_text", "list_apps",
+                    "recent_activity", "screen_info", "api_usage",
+                    "learned_procedures"}
 _READ_ONLY_MCP = {"read_file", "read_text_file", "read_multiple_files",
                   "get_file_info", "list_directory", "list_directory_with_sizes",
                   "directory_tree", "search_files", "list_allowed_directories"}
@@ -463,6 +468,9 @@ class Agent:
 
         (ctx.evidence["results"] if result.get("ok")
          else ctx.evidence["failures"]).append(result)
+        if result.get("ok") and not _is_read_only(tool):
+            with ctx.lock:
+                ctx.acted = True           # the turn did something, not just read
         detail = str(result.get("text") or result.get("stdout")
                      or result.get("note") or result.get("error") or "")[:200]
         # WRITE DOWN WHAT JUST HAPPENED, so a later turn can answer "what did you
@@ -1890,7 +1898,9 @@ def _verify_and_repair(text: str, reply: str, team, ctx: Ctx,
     task that needs a couple of corrections, which is how a job used to end a
     step short of done."""
     did_work = bool(ctx.evidence["results"] or ctx.evidence["failures"])
-    if not did_work or _is_trivial(text):
+    # A pure-READ turn changed nothing, so there is nothing to verify - skip it
+    # and save the self-check round. Only a turn that ACTED is worth checking.
+    if not did_work or _is_trivial(text) or not ctx.acted:
         return reply
 
     for attempt in range(MAX_REPAIRS):

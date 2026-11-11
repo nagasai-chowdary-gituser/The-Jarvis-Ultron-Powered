@@ -408,6 +408,38 @@ def test_dispatch_writes_the_action_log(db):
     assert any(a["tool"] == "probe" and a["ok"] for a in state.recent_actions(5))
 
 
+def test_verify_skips_a_pure_read_turn(db, monkeypatch):
+    """A read-only turn (stats, what-have-you-learned) changed nothing, so the
+    self-check pass is pure wasted latency - it must be skipped. A turn that
+    ACTED still gets verified."""
+    import verify
+    monkeypatch.setattr(agent_core, "_client", lambda: object())
+    called = []
+    monkeypatch.setattr(verify, "check",
+                        lambda *a, **k: called.append(1) or {"ok": True})
+
+    class Team:
+        def run(self, *a, **k):
+            return "repaired"
+
+    # a read-only turn: did work, not trivial, but ctx.acted stayed False
+    ctx = _ctx()
+    ctx.evidence["results"].append({"ok": True, "text": "cpu 20%"})
+    ctx.acted = False
+    out = agent_core._verify_and_repair("research my whole system and report",
+                                        "cpu 20%", Team(), ctx, [], "",
+                                        lambda e: None)
+    assert out == "cpu 20%" and called == []        # verify never ran on a read
+
+    # a turn that ACTED is still verified
+    ctx2 = _ctx()
+    ctx2.evidence["results"].append({"ok": True, "text": "made it"})
+    ctx2.acted = True
+    agent_core._verify_and_repair("research my whole system and report",
+                                  "done", Team(), ctx2, [], "", lambda e: None)
+    assert called == [1]                             # verify ran when it acted
+
+
 def test_dedupe_reply_says_it_once():
     """A repair pass can restate the answer; the owner must see it ONCE."""
     f = agent_core._dedupe_reply
@@ -705,6 +737,7 @@ def test_verify_repairs_more_than_once_until_done(db, monkeypatch):
     team = Team()
     ctx = _ctx()
     ctx.evidence["results"].append({"tool": "make_pptx", "ok": True})
+    ctx.acted = True
     out = agent_core._verify_and_repair(
         "make a 3-slide deck and save it", "done", team, ctx,
         history=[], context="", emit=lambda e: None)
@@ -731,6 +764,7 @@ def test_verify_stops_as_soon_as_it_checks_out(db, monkeypatch):
     team = Team()
     ctx = _ctx()
     ctx.evidence["results"].append({"tool": "make_pptx", "ok": True})
+    ctx.acted = True
     out = agent_core._verify_and_repair(
         "make a 3-slide deck and save it", "done", team, ctx,
         history=[], context="", emit=lambda e: None)
@@ -1092,6 +1126,7 @@ def test_verify_repairs_a_real_gap(db, monkeypatch):
                         lambda *a, **k: {"ok": False, "gap": "the file was not written"})
     ctx = _ctx()
     ctx.evidence["results"].append({"detail": "did a thing"})   # a tool ran
+    ctx.acted = True
     team = _FakeTeam("now the file is written")
     out = agent_core._verify_and_repair(
         "research the topic and write the summary file", "I researched it.",
@@ -1105,6 +1140,7 @@ def test_verify_passes_clean_work_without_repairing(db, monkeypatch):
     monkeypatch.setattr(verify, "check", lambda *a, **k: {"ok": True, "gap": ""})
     ctx = _ctx()
     ctx.evidence["results"].append({"detail": "x"})
+    ctx.acted = True
     team = _FakeTeam("SHOULD NOT BE USED")
     out = agent_core._verify_and_repair(
         "research X and summarise it", "Here is the summary.",
