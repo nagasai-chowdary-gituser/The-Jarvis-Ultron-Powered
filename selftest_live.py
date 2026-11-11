@@ -68,43 +68,57 @@ def main() -> int:
         tools = [e.get("name") for e in events if e.get("type") == "tool"]
         print(f"Jarvis: {reply[:300]}")
         print(f"(took {dt:.1f}s; tools used: {', '.join(t for t in tools if t) or 'none'})")
+        tnames = [t for t in tools if t]
         try:
-            ok, detail = verify(reply, events)
+            ok, detail = verify(reply, events, dt, tnames)
         except Exception as e:
             ok, detail = False, f"verify error: {e}"
         print(f"[{'PASS' if ok else 'FAIL'}] {label}" + (f" -- {detail}" if detail else ""))
         results.append((label, ok, detail))
 
-    # 1. REAL system reading - must return real numbers, not a guess.
-    def v_cpu(reply, ev):
-        import re
-        nums = re.findall(r"\d+", reply)
-        return (bool(nums), "no numeric reading in the reply" if not nums else "")
-    run("reads real system stats", "what is my cpu and memory usage right now", v_cpu)
+    def _doubled(reply):
+        lines = [x.strip() for x in reply.split("\n") if x.strip()]
+        return len(lines) >= 2 and lines[0] == lines[1]
 
-    # 2. REAL file creation - a 2-slide deck must actually be on disk with 2 slides.
+    # 1. REAL system reading - real numbers, AND fast (the 23s->instant fix).
+    def v_cpu(reply, ev, dt, tools):
+        import re
+        if not re.search(r"\d", reply):
+            return False, "no numeric reading in the reply"
+        if dt > 8:
+            return False, f"took {dt:.1f}s - the stats fast-path fix did not engage"
+        return True, f"real numbers, {dt:.1f}s"
+    run("reads real system stats, instantly", "what is my cpu and memory usage right now", v_cpu)
+
+    # 2. REAL file creation - 2 slides on disk, NO wasted screenshot, NO echo.
     deck = Path(str(safety.WORKSPACE)) / "selftest_live_deck.pptx"
     try:
         deck.unlink()
     except Exception:
         pass
 
-    def v_deck(reply, ev):
+    def v_deck(reply, ev, dt, tools):
         if not deck.exists():
             return False, f"{deck} was not created"
         try:
             from pptx import Presentation
             n = len(Presentation(str(deck)).slides)
-            return (n == 2, f"deck has {n} slides, expected 2")
         except Exception as e:
             return False, f"deck unreadable: {e}"
-    run("creates a real 2-slide deck on disk",
+        if n != 2:
+            return False, f"deck has {n} slides, expected 2"
+        if "see_screen" in tools:
+            return False, "took a screenshot on a file task (the over-working bug)"
+        if _doubled(reply):
+            return False, "reply printed twice (the echo bug)"
+        return True, f"2 slides, no screenshot, no echo, {dt:.1f}s"
+    run("creates a real 2-slide deck - no screenshot, no echo",
         f"make a 2-slide test deck titled 'Live Test' saved as "
         f"{deck.name} with slides 'One' and 'Two'", v_deck)
 
-    # 3. Honest introspection - it answers from the real learned-skills store.
-    def v_learned(reply, ev):
-        return (len(reply) > 0, "")
+    # 3. Honest introspection - answers from the real learned-skills store.
+    def v_learned(reply, ev, dt, tools):
+        return (len(reply) > 0 and not _doubled(reply), "empty or doubled reply")
     run("answers what it has learned (introspection)",
         "what have you learned to do so far", v_learned)
 
